@@ -292,7 +292,7 @@ If you use this tool in your research, please cite:
   title = {Easy IF Analysis: Batch Immunofluorescence Image Analysis Tool},
   author = {Your Name},
   year = {2026},
-  url = {https://github.com/Whistiff/easy-if-analysis}
+  url = {https://github.com/zhumiao-cloud/easy-immunofluorance-analysis}
 }
 ```
 
@@ -312,4 +312,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📧 Contact | 联系方式
 
-For questions or suggestions, please open an [Issue](https://github.com/Whistiff/easy-if-analysis/issues).
+For questions or suggestions, please open an [Issue](https://github.com/zhumiao-cloud/easy-immunofluorance-analysis/issues).
