@@ -290,7 +290,7 @@ If you use this tool in your research, please cite:
 ```bibtex
 @software{easy_immunofluorescence_analysis,
   title = {Easy Immunofluorescence Analysis: Batch Immunofluorescence Image Analysis Tool},
-  author = {Your Name},
+  author = {zhumiao},
   year = {2026},
   url = {https://github.com/zhumiao-cloud/easy-immunofluorance-analysis}
 }
