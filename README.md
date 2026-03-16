@@ -1,4 +1,4 @@
-# Easy IF Analysis
+# Easy Immunofluorescence Analysis
 
 Easy batch immunofluorescence (IF) image analysis tool with automatic channel detection, colocalization analysis, and statistical comparison.
 
@@ -288,8 +288,8 @@ pip install tifffile
 If you use this tool in your research, please cite:
 
 ```bibtex
-@software{easy_if_analysis,
-  title = {Easy IF Analysis: Batch Immunofluorescence Image Analysis Tool},
+@software{easy_immunofluorescence_analysis,
+  title = {Easy Immunofluorescence Analysis: Batch Immunofluorescence Image Analysis Tool},
   author = {Your Name},
   year = {2026},
   url = {https://github.com/zhumiao-cloud/easy-immunofluorance-analysis}
