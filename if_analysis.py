@@ -1,46 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Easy batch immunofluorescence (IF) analysis script - fixed version.
-
-这版重点修复了原脚本中的两个核心问题：
-
-1) 通道识别
-   - 原脚本对 TIFF 直接按 FILE_CHANNEL_ORDER 绑定，容易把 RGB TIFF / 多通道 TIFF 的通道顺序搞错。
-   - 现在优先使用：
-       a. 手动 FILE_CHANNEL_ORDER（如果你明确知道顺序）
-       b. TIFF/OME 元数据中的通道名
-       c. RGB/BGR 合成图的颜色语义自动映射
-          - cv2 读 PNG/JPG/BMP: BGR -> [DAPI, 488, 594]
-          - tifffile 读 RGB TIFF  : RGB -> [594, 488, DAPI]
-       d. 仅对 DAPI 做启发式自动识别
-   - 如果是“没有元数据的原始灰度平面堆栈”，脚本无法可靠地区分 488 和 594。
-     这种情况下默认严格报错，避免静默分析错通道。
-
-2) QC 输出
-   - 现在会保存：
-       a. 标准 QC 图（含 DAPI raw、ROI QC、首个分析通道 raw / bg-subtracted、Merged QC）
-       b. channel_diagnostics：每个原始 index 的单独 raw 图 + 自动映射结果
-   - 这样能直接审查“原始第 0/1/2 通道分别是什么”。
-
-为什么不能单纯“按颜色自动筛选通道”？
------------------------------------
-因为显微图像里常见的是两种完全不同的数据：
-
-A. 原始多通道 TIFF / OME-TIFF
-   - 底层通常是多个灰度平面（plane 0, plane 1, plane 2 ...）
-   - “蓝/绿/红”只是软件显示时人为指定的伪彩
-   - 文件本身很多时候并没有把“这是 DAPI / 这是 488 / 这是 594”写死到像素里
-   - 如果没有 metadata，就无法只靠“颜色”知道哪个平面是哪个 marker
-
-B. 已经合成好的 RGB/BGR 彩图
-   - 这类图像才真的有 R/G/B 三个颜色通道
-   - 这时可以按蓝= DAPI、绿=488、红=594 这样映射
-   - 但如果 594 和 647 已经一起混进红色，就再也无法分开
-
-所以：
-- “颜色自动检测”只适用于 RGB/BGR 合成图
-- “原始多通道灰度堆栈”必须依赖 metadata，或者手动给顺序
+Batch immunofluorescence analysis for direct multichannel images and
+sample-folder inputs made of single-channel files.
 """
 
 from __future__ import annotations
@@ -82,32 +44,26 @@ except Exception:
 
 
 # ============================================================================
-# 用户配置区：绝大多数情况下，只需要修改这一段
+# User Settings: edit this section
 # ============================================================================
 
-GROUP1_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/cd11c_cd31_cxcr4/3m"
-GROUP2_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/cd11c_cd31_cxcr4/22m"
-GROUP1_NAME = "3m"
-GROUP2_NAME = "22m"
-OUTPUT_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/if_analysis_results"
+# Paths
+GROUP1_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/cd11c_cd31_cxcr4/3m"  # 组1输入目录
+GROUP2_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/cd11c_cd31_cxcr4/22m"  # 组2输入目录
+GROUP1_NAME = "3m"  # 图表和结果表里的组1名称
+GROUP2_NAME = "22m"  # 图表和结果表里的组2名称
+OUTPUT_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/if_analysis_results"  # 输出总目录
 
-# 输入模式：
-# - "auto"           : 自动识别。若子文件夹中识别到单通道图，则按“样本文件夹模式”分析；否则按“直接图片模式”分析
-# - "sample_folders" : 只分析 GROUP1_DIR / GROUP2_DIR 下的样本子文件夹
-# - "image_files"    : 只分析 GROUP1_DIR / GROUP2_DIR 下直接扫描到的图片文件
-INPUT_DISCOVERY_MODE = "auto"
+# Input structure
+INPUT_DISCOVERY_MODE = "auto"  # auto / sample_folders / image_files
+IMAGE_PATTERNS = ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"]  # 会被扫描的图像后缀
+RECURSIVE_SCAN = False  # True 时递归扫描子目录
 
-# 通道配置：大多数情况下只需要改这一段
-DAPI_CHANNEL = "DAPI"
-ANALYSIS_CHANNELS = ["488", "594", "647"]
+AUTO_DETECT_CHANNELS = True  # 是否尝试自动识别通道顺序
+STRICT_CHANNEL_DETECTION = True  # True 时检测不明确就报错，不静默兜底
+FILE_CHANNEL_ORDER: Optional[List[str]] = None  # 单个多通道文件的手动通道顺序；None 表示自动判断
 
-# 如果某些文件并不是分析通道，而是 overlay / merge / composite 等展示图，
-# 可在这里配置“文件名关键字 -> 文件角色”。
-# 支持的角色：
-# - "overlay": 当作 overlay/composite 图忽略
-# - "ignore" : 直接忽略，效果与 overlay 相同
-# 例如如果你的 overlay 文件名是 40X_CH0.tif，可写成 "CH0": "overlay"
-FILENAME_ROLE_MAP = {
+FILENAME_ROLE_MAP = {  # 用于在样本文件夹模式下忽略 overlay / merge 一类文件
     "OVERLAY": "overlay",
     "MERGE": "overlay",
     "MERGED": "overlay",
@@ -115,122 +71,93 @@ FILENAME_ROLE_MAP = {
     "RGB": "overlay",
 }
 
-# 如果单通道文件名不直接写 DAPI/488/594/647，可在这里配置“文件名关键字 -> 通道名”。
-# 例如文件名里包含 CH1/CH2/CH3/CH4 时，可写成：
-FILENAME_CHANNEL_MAP = {
-    "CH1": DAPI_CHANNEL,
+FILENAME_CHANNEL_MAP = {  # 当文件名不直接写 DAPI/488/594/647 时使用
+    "CH1": "DAPI",
     "CH2": "488",
     "CH3": "594",
     "CH4": "647",
 }
 
-# 手动指定多通道文件中的通道顺序（只对单个多通道 TIFF / PNG / JPG 输入生效）。
-# 如果你明确知道真实顺序，直接填写，例如：
-# FILE_CHANNEL_ORDER = ["647", "594", "488", "DAPI"]
-# 如果不确定，设为 None，让脚本自动检测 metadata / RGB 颜色语义。
-FILE_CHANNEL_ORDER: Optional[List[str]] = None
+# Channels and statistics
+DAPI_CHANNEL = "DAPI"  # 核通道名称
+ANALYSIS_CHANNELS = ["488", "594", "647"]  # 进入强度和共定位分析的通道
+AUTO_ALL_PAIRWISE_STATS = True  # True 时自动做 ANALYSIS_CHANNELS 的两两配对
+MANUAL_COLOCALIZATION_PAIRS: List[Tuple[str, str]] = []  # 仅在 AUTO_ALL_PAIRWISE_STATS=False 时使用
 
-# 共定位/相关性统计：
-# - True  : 自动对 ANALYSIS_CHANNELS 生成全部两两组合
-# - False : 仅使用 MANUAL_COLOCALIZATION_PAIRS
-AUTO_ALL_PAIRWISE_STATS = True
-MANUAL_COLOCALIZATION_PAIRS: List[Tuple[str, str]] = []
+# Quantification
+BACKGROUND_PERCENTILE = 3.0  # 背景估计分位数的全局默认值
+BACKGROUND_PERCENTILE_RULES: Dict[str, float] = {  # 按通道覆盖背景分位数；DAPI 可单独设低一点
+    "DAPI": 1.0,
+    "488": 3.0,
+    "594": 3.0,
+    "647": 3.0,
+}
+MIN_NUCLEUS_AREA = 0.5  # 仅用于 DAPI 核分割；运行时会转成 >=1 的整数
+MIN_POSITIVE_OBJECT_AREA = 0  # 阳性阈值后碎点过滤的全局默认面积；0 表示关闭
+POSITIVE_OBJECT_AREA_RULES: Dict[str, int] = {  # 按通道覆盖碎点过滤面积；DAPI 可与 marker 分开设置
+    "DAPI": 0,
+    "488": 100,
+    "594": 200,
+    "647": 100,
+}
+GAUSSIAN_BLUR_SIZE = 7  # DAPI 分割前的高斯平滑核大小
+MIN_PEAK_DISTANCE = 1  # watershed 种子点最小距离
+MASK_DILATION_RADIUS = 0  # ROI 相对 nuclei 向外扩张的像素半径
 
-# 下面这些会根据上面的主配置自动生成，一般不需要再改
-INTENSITY_CHANNELS = list(ANALYSIS_CHANNELS)
-AUTO_COLOCALIZATION_PAIRS = bool(AUTO_ALL_PAIRWISE_STATS)
-COLOCALIZATION_PAIRS = list(MANUAL_COLOCALIZATION_PAIRS)
-FALLBACK_CHANNEL_ORDER = [DAPI_CHANNEL] + [x for x in INTENSITY_CHANNELS if x != DAPI_CHANNEL]
-
-# 自动通道检测
-AUTO_DETECT_CHANNELS = True
-STRICT_CHANNEL_DETECTION = True  # 模糊时直接报错，避免静默错配
-SAVE_CHANNEL_DIAGNOSTICS = True  # 保存每个 raw index 的诊断图
-
-# 阳性阈值
-# 作用：
-# - 控制 positive_area_fraction / 共定位等“什么算阳性”
-# - 同时影响 channel_diagnostics 和 QC 图里的阈值化预览
-# 默认：
-# - 每个通道都使用 ROI 内 bg-subtracted 信号的 Otsu 自动阈值
-# 如果 594 假阳性偏多，可提高阈值，例如：
-# POSITIVE_THRESHOLD_RULES = {
-#     "594": {"method": "otsu", "scale": 1.8, "min_value": 30.0}
-# }
-# 可选 method:
-# - "otsu"      : threshold = otsu * scale + offset，再与 min_value 取较大
-# - "manual"    : threshold = value
-# - "percentile": threshold = ROI 内 percentile 分位数，再叠加 scale / offset / min_value
-#POSITIVE_THRESHOLD_RULES: Dict[str, Dict[str, Any]] = {}  #空字典
-
-# 修改594阈值，建议采用 Otsu 自动阈值乘以 1.8 倍缩放（scale）并设定 30 为下限，使 594 信号避免将弱噪声误判为阳性，
-# 若噪声仍偏多可上调 scale 至 2.0–2.2，若真信号被过度压制则下调至 1.4–1.6，亦可直接通过 {"method": "manual", "value": 80} 完全手动指定阈值。
-POSITIVE_THRESHOLD_RULES = {
-    "594": {"method": "otsu", "scale": 1.6, "min_value": 30.0}  
+POSITIVE_THRESHOLD_RULES = {  # 各通道阳性阈值规则；若包含 DAPI，也会影响 DAPI 的 split/merged positive preview
+    "DAPI": {"method": "otsu", "scale": 1.0, "min_value": 0.0},
+    "594": {"method": "otsu", "scale": 1.7, "min_value": 30.0},
+    "488": {"method": "otsu", "scale": 1.1, "min_value": 30.0},
+    "647": {"method": "otsu", "scale": 1.3, "min_value": 30.0},
 }
 
+# Bleed-through correction
+ENABLE_BLEEDTHROUGH_CORRECTION = True  # 是否启用串色扣除
 
-# 串色 / bleed-through 校正
-# 适用场景：
-# - 现在通道顺序已经正确
-# - 但某个目标通道中仍混入了另一个 source 通道的结构
-# 核心思想：
-#   corrected_target = max((target - bgtarget) - k * (source - bgsource), 0)
-# 这不是“按颜色筛选”，而是按线性串色模型扣除 source 对 target 的贡献。
-# 如果发现 594 混入了 DAPI，就写 "594": DAPI_CHANNEL
-# 如果发现 647 混入了 488，就写 "647": "488"
-# 单文件模式和样本文件夹模式都会共用这套规则。
-ENABLE_BLEEDTHROUGH_CORRECTION = True
-SAVE_BLEEDTHROUGH_DIAGNOSTICS = True
-
-BLEEDTHROUGH_SOURCE_MAP = {
+BLEEDTHROUGH_SOURCE_MAP = {  # target <- source
     "488": DAPI_CHANNEL,
     # "594": DAPI_CHANNEL,
     # "647": "488",
 }
 
-# 所有自动串色规则默认共用这组参数；通常不需要每个通道单独再写一遍。
-BLEEDTHROUGH_DEFAULT_RULE: Dict[str, Any] = {
-    "mode": "auto",                     # "auto" 或 "manual"
-    "estimate_mask": "nuclei",          # "nuclei" / "roi" / "all"
-    "ratio_percentile": 20.0,           # auto 模式：取较低分位，尽量避免过度扣除
-    "source_threshold_percentile": 75.0,  # auto 模式：只在 source 较强像素上估计
-    "min_pixels": 100,                  # auto 模式：最少用于估计的像素数
-    "max_coefficient": 3.0,             # auto 模式：k 的上限，避免异常值
+BLEEDTHROUGH_DEFAULT_RULE: Dict[str, Any] = {  # 自动估计串色系数时的默认参数
+    "mode": "auto",
+    "estimate_mask": "nuclei",
+    "ratio_percentile": 20.0,
+    "source_threshold_percentile": 75.0,
+    "min_pixels": 100,
+    "max_coefficient": 3.0,
 }
 
-# 如果某个目标通道想改成手动系数，只需要在这里填一个数字。
-# 例如：{"647": 0.12}
-BLEEDTHROUGH_MANUAL_COEFFICIENTS: Dict[str, float] = {}
+BLEEDTHROUGH_MANUAL_COEFFICIENTS: Dict[str, float] = {}  # 需要手动系数时在这里填 target:coefficient
+BLEEDTHROUGH_RULE_OVERRIDES: Dict[str, Dict[str, Any]] = {}  # 只在少数通道要覆盖默认规则时填写
 
-# 高级覆盖：只有在某个通道需要与默认参数不同的 mode / mask / percentile 时再填写。
-# 例如：
-# BLEEDTHROUGH_RULE_OVERRIDES = {
-#     "594": {"source": DAPI_CHANNEL, "estimate_mask": "roi"},
-#     "647": {"source": "488", "mode": "manual", "coefficient": 0.12},
-# }
-BLEEDTHROUGH_RULE_OVERRIDES: Dict[str, Dict[str, Any]] = {}
+# Visualization and outputs
+CHANNEL_COLORS: Dict[str, Tuple[int, int, int]] = {  # split preview 与 merged 共用这套颜色
+    "DAPI": (0, 0, 255),
+    "488": (0, 255, 0),
+    "594": (255, 0, 0),
+    "647": (255, 0, 178),
+}
+RAW_CHANNEL_DISPLAY_MODE = "color"           # 原始单通道面板显示方式: color / gray
+POSITIVE_PREVIEW_DISPLAY_MODE = "color"      # 阳性预览显示方式: colormap / color / gray
+POSITIVE_PREVIEW_COLORMAP = "inferno"        # 仅在 POSITIVE_PREVIEW_DISPLAY_MODE="colormap" 时使用
+SAVE_CHANNEL_DIAGNOSTICS = True              # 是否保存 channel_diagnostics
+SAVE_QC_OVERLAYS = True                      # 是否保存 qc_overlays
+SAVE_BLEEDTHROUGH_DIAGNOSTICS = True         # 是否保存串色校正诊断图
+SAVE_FIGURE_PDF = True                       # 是否保存汇总 PDF
+SAVE_FIGURE_PNG = True                       # 是否保存汇总 PNG
+FIGURE_DPI = 500                             # 输出图分辨率
 
-# 文件扫描
-IMAGE_PATTERNS = ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"]
-RECURSIVE_SCAN = False
-
-# 分析参数
-BACKGROUND_PERCENTILE = 3   # 背景估计分位数；值越大，通常扣掉的背景越多,60X 的话可填 5
-MIN_NUCLEUS_AREA = 1     # 细胞核最小面积；小于这个值的区域会被当作噪声去掉，60X的话可填 2200
-GAUSSIAN_BLUR_SIZE = 7      # 分割前的高斯模糊核大小；越大越平滑，但也更容易丢细节
-MIN_PEAK_DISTANCE = 0.2      # 分水岭分割时种子点的最小距离；越大越不容易把挨得近的核分开 ，60X 的话可填 25
-MASK_DILATION_RADIUS = 0.4   # 以细胞核为基础向外扩张的像素半径，用来近似细胞 ROI ，60X 的话可填 18
-SAVE_QC_OVERLAYS = True     # 是否保存 QC 质控图；True 保存，False 不保存
-
-# 输出
-SAVE_FIGURE_PDF = True
-SAVE_FIGURE_PNG = True
-FIGURE_DPI = 500
+# Derived from the settings above. Usually do not edit.
+INTENSITY_CHANNELS = list(ANALYSIS_CHANNELS)
+AUTO_COLOCALIZATION_PAIRS = bool(AUTO_ALL_PAIRWISE_STATS)
+COLOCALIZATION_PAIRS = list(MANUAL_COLOCALIZATION_PAIRS)
+FALLBACK_CHANNEL_ORDER = [DAPI_CHANNEL] + [x for x in INTENSITY_CHANNELS if x != DAPI_CHANNEL]
 
 
 # ============================================================================
-# 一般不需要改动的参数
+# Internal constants: usually do not edit
 # ============================================================================
 
 SIGNIFICANCE_LEVELS = [(0.001, "***"), (0.01, "**"), (0.05, "*")]
@@ -238,6 +165,12 @@ DEFAULT_GROUP_COLORS = ("#4472C4", "#ED7D31","#A747BE")
 MIN_PIXELS_FOR_COLOC = 10
 ALLOWED_CHANNEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_\-+.]+$")
 CANONICAL_CHANNELS = ("DAPI", "488", "594", "647")
+CHANNEL_PSEUDOCOLOR_RGB = {
+    "DAPI": (0, 0, 255),
+    "488": (0, 255, 0),
+    "594": (255, 0, 0),
+    "647": (255, 0, 178),
+}
 
 
 # ============================================================================
@@ -274,10 +207,17 @@ class AnalysisConfig:
     image_patterns: List[str] = field(default_factory=lambda: ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"])
     recursive_scan: bool = False
     background_percentile: float = 10.0
+    background_percentile_rules: Dict[str, float] = field(default_factory=dict)
     min_nucleus_area: int = 50
+    min_positive_object_area: int = 0
+    positive_object_area_rules: Dict[str, int] = field(default_factory=dict)
     gaussian_blur_size: int = 5
     min_peak_distance: int = 6
     mask_dilation_radius: int = 6
+    channel_colors: Dict[str, Tuple[int, int, int]] = field(default_factory=dict)
+    raw_channel_display_mode: str = "gray"
+    positive_preview_display_mode: str = "colormap"
+    positive_preview_colormap: str = "inferno"
     save_qc_overlays: bool = True
     save_figure_pdf: bool = True
     save_figure_png: bool = True
@@ -669,24 +609,79 @@ def robust_otsu_threshold(values: Sequence[Any]) -> float:
 
 
 def make_thresholded_preview(signal: np.ndarray, threshold: float) -> np.ndarray:
+    return make_thresholded_preview_with_cleanup(signal, threshold, min_area=0)
+
+
+def normalize_raw_channel_display_mode(mode: str) -> str:
+    token = simplify_token(mode)
+    aliases = {
+        "GRAY": "gray",
+        "GREY": "gray",
+        "GRAYSCALE": "gray",
+        "GREYSCALE": "gray",
+        "COLOR": "color",
+        "COLOUR": "color",
+        "RGB": "color",
+        "PSEUDOCOLOR": "color",
+        "PSEUDO": "color",
+    }
+    if token not in aliases:
+        raise ValueError(f"不支持的 RAW_CHANNEL_DISPLAY_MODE: {mode}。可选值: gray / color")
+    return aliases[token]
+
+
+def normalize_positive_preview_display_mode(mode: str) -> str:
+    token = simplify_token(mode)
+    aliases = {
+        "GRAY": "gray",
+        "GREY": "gray",
+        "GRAYSCALE": "gray",
+        "GREYSCALE": "gray",
+        "COLOR": "color",
+        "COLOUR": "color",
+        "RGB": "color",
+        "PSEUDOCOLOR": "color",
+        "PSEUDO": "color",
+        "COLORMAP": "colormap",
+        "CMAP": "colormap",
+        "HEATMAP": "colormap",
+    }
+    if token not in aliases:
+        raise ValueError(
+            f"不支持的 POSITIVE_PREVIEW_DISPLAY_MODE: {mode}。"
+            " 可选值: colormap / color / gray"
+        )
+    return aliases[token]
+
+
+def filter_positive_mask(mask: np.ndarray, min_area: int) -> np.ndarray:
+    mask = np.asarray(mask, dtype=bool)
+    min_area = int(max(0, min_area))
+    if min_area <= 1 or not np.any(mask):
+        return mask
+    return np.asarray(remove_small_objects_compat(mask, min_area), dtype=bool)
+
+
+def make_positive_mask(signal: np.ndarray, threshold: float, min_area: int = 0) -> np.ndarray:
     arr = np.asarray(signal, dtype=np.float64)
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     threshold = float(max(0.0, threshold))
+    mask = arr > threshold
+    return filter_positive_mask(mask, min_area=min_area)
+
+
+def make_thresholded_preview_with_cleanup(signal: np.ndarray, threshold: float, min_area: int = 0) -> np.ndarray:
+    arr = np.asarray(signal, dtype=np.float64)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    mask = make_positive_mask(arr, threshold, min_area=min_area)
     out = arr.copy()
-    out[out <= threshold] = 0.0
+    out[~mask] = 0.0
     return out
 
 
-def make_positive_mask(signal: np.ndarray, threshold: float) -> np.ndarray:
-    arr = np.asarray(signal, dtype=np.float64)
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    threshold = float(max(0.0, threshold))
-    return arr > threshold
-
-
-def positive_fraction_in_roi(signal: np.ndarray, roi_mask: np.ndarray, threshold: float) -> float:
+def positive_fraction_in_roi(signal: np.ndarray, roi_mask: np.ndarray, threshold: float, min_area: int = 0) -> float:
     roi_mask = np.asarray(roi_mask, dtype=bool)
-    positive_mask = make_positive_mask(signal, threshold)
+    positive_mask = make_positive_mask(signal, threshold, min_area=min_area)
     if np.any(roi_mask):
         return float(np.mean(positive_mask[roi_mask]))
     return float(np.mean(positive_mask))
@@ -714,6 +709,58 @@ def ensure_rgb_uint8(image: np.ndarray, cmap_name: str = "gray") -> np.ndarray:
             return np.clip(np.round(arr * 255.0), 0, 255).astype(np.uint8)
         return np.clip(np.round(arr), 0, 255).astype(np.uint8)
     raise ValueError(f"不支持的图像形状: {arr.shape}")
+
+
+def resolve_channel_color(
+    channel_name: str,
+    channel_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
+) -> Tuple[int, int, int]:
+    channel = canonicalize_channel_label(channel_name) or normalize_channel_name(channel_name)
+    colors = channel_colors or CHANNEL_PSEUDOCOLOR_RGB
+    if channel in colors:
+        color = colors[channel]
+        return tuple(int(np.clip(float(x), 0, 255)) for x in color)
+    return tuple(int(x) for x in CHANNEL_PSEUDOCOLOR_RGB.get(channel, (255, 255, 255)))
+
+
+def colorize_channel_u8(
+    gray_u8: np.ndarray,
+    channel_name: str,
+    channel_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
+) -> np.ndarray:
+    gray_u8 = np.asarray(gray_u8, dtype=np.uint8)
+    rgb = np.asarray(resolve_channel_color(channel_name, channel_colors=channel_colors), dtype=np.float32) / 255.0
+    scaled = (gray_u8.astype(np.float32) / 255.0)[..., None] * rgb[None, None, :]
+    return np.clip(np.round(scaled * 255.0), 0, 255).astype(np.uint8)
+
+
+def render_channel_panel(
+    image: np.ndarray,
+    channel_name: str,
+    display_mode: str,
+    channel_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
+) -> np.ndarray:
+    display_mode = normalize_raw_channel_display_mode(display_mode)
+    gray_u8 = robust_normalize_for_display(image)
+    if display_mode == "gray":
+        return apply_colormap_to_u8(gray_u8, cmap_name="gray")
+    return colorize_channel_u8(gray_u8, channel_name=channel_name, channel_colors=channel_colors)
+
+
+def render_positive_preview_panel(
+    image: np.ndarray,
+    channel_name: str,
+    display_mode: str,
+    cmap_name: str,
+    channel_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
+) -> np.ndarray:
+    display_mode = normalize_positive_preview_display_mode(display_mode)
+    gray_u8 = robust_normalize_for_display(image)
+    if display_mode == "gray":
+        return apply_colormap_to_u8(gray_u8, cmap_name="gray")
+    if display_mode == "color":
+        return colorize_channel_u8(gray_u8, channel_name=channel_name, channel_colors=channel_colors)
+    return apply_colormap_to_u8(gray_u8, cmap_name=cmap_name)
 
 
 @lru_cache(maxsize=16)
@@ -836,6 +883,9 @@ def build_merged_preview(
     channel_images: Dict[str, np.ndarray],
     positive_thresholds: Optional[Dict[str, PositiveThresholdInfo]] = None,
     thresholded: bool = False,
+    min_positive_object_area: int = 0,
+    positive_object_area_rules: Optional[Dict[str, int]] = None,
+    channel_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
 ) -> np.ndarray:
     if not channel_images:
         return np.zeros((1, 1, 3), dtype=np.uint8)
@@ -844,29 +894,32 @@ def build_merged_preview(
     sample = np.asarray(sample)
     merged = np.zeros((sample.shape[0], sample.shape[1], 3), dtype=np.uint8)
 
-    dapi = channel_images.get("DAPI")
-    if dapi is not None:
-        merged[..., 2] = np.maximum(merged[..., 2], robust_normalize_for_display(dapi))
+    ordered_channels = [name for name in CANONICAL_CHANNELS if name in channel_images]
+    ordered_channels.extend(
+        name for name in channel_images.keys()
+        if normalize_channel_name(name) not in {normalize_channel_name(x) for x in ordered_channels}
+    )
 
-    if "488" in channel_images:
-        green = channel_images["488"]
-        if thresholded and positive_thresholds and "488" in positive_thresholds:
-            green = make_thresholded_preview(green, positive_thresholds["488"].threshold)
-        merged[..., 1] = np.maximum(merged[..., 1], robust_normalize_for_display(green))
-
-    if "594" in channel_images:
-        ch594 = channel_images["594"]
-        if thresholded and positive_thresholds and "594" in positive_thresholds:
-            ch594 = make_thresholded_preview(ch594, positive_thresholds["594"].threshold)
-        merged[..., 0] = np.maximum(merged[..., 0], robust_normalize_for_display(ch594))
-
-    if "647" in channel_images:
-        ch647 = channel_images["647"]
-        if thresholded and positive_thresholds and "647" in positive_thresholds:
-            ch647 = make_thresholded_preview(ch647, positive_thresholds["647"].threshold)
-        ch647_u8 = robust_normalize_for_display(ch647)
-        merged[..., 0] = np.maximum(merged[..., 0], ch647_u8)
-        merged[..., 2] = np.maximum(merged[..., 2], np.clip(np.round(ch647_u8 * 0.7), 0, 255).astype(np.uint8))
+    for channel_name in ordered_channels:
+        preview = np.asarray(channel_images[channel_name], dtype=np.float64)
+        threshold_info = (positive_thresholds or {}).get(normalize_channel_name(channel_name))
+        if thresholded and threshold_info is not None:
+            channel_min_area = resolve_positive_object_area(
+                channel_name,
+                default_min_area=min_positive_object_area,
+                area_rules=positive_object_area_rules,
+            )
+            preview = make_thresholded_preview_with_cleanup(
+                preview,
+                threshold_info.threshold,
+                min_area=channel_min_area,
+            )
+        colored = colorize_channel_u8(
+            robust_normalize_for_display(preview),
+            channel_name=channel_name,
+            channel_colors=channel_colors,
+        )
+        merged = np.maximum(merged, colored)
 
     return merged
 
@@ -876,11 +929,20 @@ def build_denoised_merged_image(
     group_name: str,
     channel_images: Dict[str, np.ndarray],
     merged_dir: Path,
+    min_positive_object_area: int = 0,
+    positive_object_area_rules: Optional[Dict[str, int]] = None,
+    channel_colors: Optional[Dict[str, Tuple[int, int, int]]] = None,
 ) -> Optional[Path]:
     if not channel_images:
         return None
     make_output_dir(merged_dir)
-    merged = build_merged_preview(channel_images, thresholded=False)
+    merged = build_merged_preview(
+        channel_images,
+        thresholded=False,
+        min_positive_object_area=min_positive_object_area,
+        positive_object_area_rules=positive_object_area_rules,
+        channel_colors=channel_colors,
+    )
     out_path = merged_dir / f"{build_output_basename(group_name, image_path)}_merged_denoised.png"
     return save_rgb_image(out_path, merged)
 
@@ -1589,10 +1651,15 @@ def validate_config(config: AnalysisConfig) -> AnalysisConfig:
     config.filename_channel_map = normalize_filename_channel_map(config.filename_channel_map)
     config.fallback_channel_order = [normalize_channel_name(x) for x in config.fallback_channel_order]
     config.positive_threshold_rules = _normalize_positive_threshold_rules(config.positive_threshold_rules)
+    config.background_percentile_rules = _normalize_background_percentile_rules(config.background_percentile_rules)
+    config.positive_object_area_rules = _normalize_positive_object_area_rules(config.positive_object_area_rules)
     config.bleedthrough_rules = _normalize_bleedthrough_rules(config.bleedthrough_rules)
     config.dapi_channel = normalize_channel_name(config.dapi_channel)
     config.intensity_channels = [normalize_channel_name(x) for x in config.intensity_channels]
     config.colocalization_pairs = normalize_colocalization_pairs(config.colocalization_pairs)
+    config.channel_colors = _normalize_channel_colors(config.channel_colors)
+    config.raw_channel_display_mode = normalize_raw_channel_display_mode(config.raw_channel_display_mode)
+    config.positive_preview_display_mode = normalize_positive_preview_display_mode(config.positive_preview_display_mode)
 
     if config.auto_colocalization_pairs:
         config.colocalization_pairs = build_all_channel_pairs(config.intensity_channels)
@@ -1643,9 +1710,14 @@ def validate_config(config: AnalysisConfig) -> AnalysisConfig:
 
     config.gaussian_blur_size = ensure_odd(config.gaussian_blur_size)
     config.min_nucleus_area = int(max(1, config.min_nucleus_area))
+    config.min_positive_object_area = int(max(0, config.min_positive_object_area))
     config.min_peak_distance = int(max(1, config.min_peak_distance))
     config.mask_dilation_radius = int(max(0, config.mask_dilation_radius))
     config.background_percentile = float(np.clip(config.background_percentile, 0.0, 100.0))
+    try:
+        matplotlib.colormaps.get_cmap(config.positive_preview_colormap)
+    except Exception as exc:
+        raise ValueError(f"不支持的 POSITIVE_PREVIEW_COLORMAP: {config.positive_preview_colormap}") from exc
 
     config.group1_dir = Path(config.group1_dir)
     config.group2_dir = Path(config.group2_dir)
@@ -1765,6 +1837,63 @@ def _normalize_positive_threshold_rules(rules: Dict[str, Dict[str, Any]]) -> Dic
         if not isinstance(rule, dict):
             raise ValueError(f"POSITIVE_THRESHOLD_RULES[{channel_name}] 必须是 dict 或数字。")
         normalized[channel] = dict(rule)
+    return normalized
+
+
+def _normalize_positive_object_area_rules(rules: Dict[str, Any]) -> Dict[str, int]:
+    normalized: Dict[str, int] = {}
+    for channel_name, value in (rules or {}).items():
+        channel = normalize_channel_name(channel_name)
+        normalized[channel] = int(max(0, value))
+    return normalized
+
+
+def resolve_positive_object_area(
+    channel_name: str,
+    default_min_area: int,
+    area_rules: Optional[Dict[str, int]] = None,
+) -> int:
+    channel = normalize_channel_name(channel_name)
+    rules = area_rules or {}
+    return int(max(0, rules.get(channel, default_min_area)))
+
+
+def _normalize_background_percentile_rules(rules: Dict[str, Any]) -> Dict[str, float]:
+    normalized: Dict[str, float] = {}
+    for channel_name, value in (rules or {}).items():
+        channel = normalize_channel_name(channel_name)
+        normalized[channel] = float(np.clip(value, 0.0, 100.0))
+    return normalized
+
+
+def resolve_background_percentile(
+    channel_name: str,
+    default_percentile: float,
+    percentile_rules: Optional[Dict[str, float]] = None,
+) -> float:
+    channel = normalize_channel_name(channel_name)
+    rules = percentile_rules or {}
+    return float(np.clip(rules.get(channel, default_percentile), 0.0, 100.0))
+
+
+def _normalize_channel_colors(raw_map: Dict[str, Any]) -> Dict[str, Tuple[int, int, int]]:
+    normalized: Dict[str, Tuple[int, int, int]] = {}
+    for channel_name, raw_color in (raw_map or {}).items():
+        channel = normalize_channel_name(channel_name)
+        if isinstance(raw_color, str):
+            text = str(raw_color).strip()
+            if text.startswith("#"):
+                text = text[1:]
+            if len(text) != 6 or not re.fullmatch(r"[0-9A-Fa-f]{6}", text):
+                raise ValueError(f"CHANNEL_COLORS[{channel_name}] 颜色格式错误: {raw_color}")
+            color = tuple(int(text[i:i + 2], 16) for i in (0, 2, 4))
+        elif isinstance(raw_color, (list, tuple)) and len(raw_color) == 3:
+            color = tuple(int(np.clip(float(x), 0, 255)) for x in raw_color)
+        else:
+            raise ValueError(
+                f"CHANNEL_COLORS[{channel_name}] 必须是 RGB 三元组或 #RRGGBB 字符串。"
+            )
+        normalized[channel] = color
     return normalized
 
 
@@ -1966,11 +2095,17 @@ def apply_bleedthrough_correction(
     roi_mask: np.ndarray,
     nuclei_mask: np.ndarray,
     background_percentile: float,
+    background_percentile_rules: Optional[Dict[str, float]],
     bleedthrough_rules: Dict[str, Dict[str, Any]],
 ) -> Tuple[np.ndarray, float, BleedthroughCorrectionInfo, np.ndarray, np.ndarray]:
     target_name = normalize_channel_name(target_channel_name)
     target_raw = np.asarray(raw_channels[target_name], dtype=np.float64)
-    target_signal, target_bg = prepare_signal(target_raw, roi_mask=roi_mask, background_percentile=background_percentile)
+    target_bg_percentile = resolve_background_percentile(
+        target_name,
+        default_percentile=background_percentile,
+        percentile_rules=background_percentile_rules,
+    )
+    target_signal, target_bg = prepare_signal(target_raw, roi_mask=roi_mask, background_percentile=target_bg_percentile)
 
     default_info = BleedthroughCorrectionInfo(
         applied=False,
@@ -2025,7 +2160,12 @@ def apply_bleedthrough_correction(
         return target_signal, target_bg, info, target_signal, zero_source
 
     source_raw = np.asarray(raw_channels[source_name], dtype=np.float64)
-    source_signal, source_bg = prepare_signal(source_raw, roi_mask=roi_mask, background_percentile=background_percentile)
+    source_bg_percentile = resolve_background_percentile(
+        source_name,
+        default_percentile=background_percentile,
+        percentile_rules=background_percentile_rules,
+    )
+    source_signal, source_bg = prepare_signal(source_raw, roi_mask=roi_mask, background_percentile=source_bg_percentile)
 
     mode = str(rule.get("mode", "auto")).strip().lower()
     if mode == "manual":
@@ -2072,6 +2212,7 @@ def compute_intensity_metrics(
     dapi_name: str,
     background_value: float,
     positive_threshold: PositiveThresholdInfo,
+    min_positive_object_area: int,
 ) -> Dict[str, Any]:
     roi_mask = np.asarray(roi_mask, dtype=bool)
     channel_name = normalize_channel_name(channel_name)
@@ -2085,7 +2226,12 @@ def compute_intensity_metrics(
         roi_values = signal[roi_mask]
         roi_mean_bgsub = float(np.mean(roi_values))
         roi_integrated_bgsub = float(np.sum(roi_values))
-        positive_area_fraction = float(np.mean(roi_values > positive_threshold.threshold))
+        positive_area_fraction = positive_fraction_in_roi(
+            signal,
+            roi_mask,
+            positive_threshold.threshold,
+            min_area=min_positive_object_area,
+        )
     else:
         roi_mean_bgsub = float("nan")
         roi_integrated_bgsub = 0.0
@@ -2121,6 +2267,8 @@ def compute_colocalization(
     roi_mask: np.ndarray,
     threshold_a: PositiveThresholdInfo,
     threshold_b: PositiveThresholdInfo,
+    min_positive_object_area_a: int,
+    min_positive_object_area_b: int,
 ) -> Dict[str, float]:
     a_name = normalize_channel_name(channel_a_name)
     b_name = normalize_channel_name(channel_b_name)
@@ -2131,8 +2279,8 @@ def compute_colocalization(
     if not np.any(roi_mask):
         roi_mask = np.ones(signal_a.shape, dtype=bool)
 
-    mask_a = roi_mask & (signal_a > threshold_a.threshold)
-    mask_b = roi_mask & (signal_b > threshold_b.threshold)
+    mask_a = roi_mask & make_positive_mask(signal_a, threshold_a.threshold, min_area=min_positive_object_area_a)
+    mask_b = roi_mask & make_positive_mask(signal_b, threshold_b.threshold, min_area=min_positive_object_area_b)
     union_mask = mask_a | mask_b
     intersection_mask = mask_a & mask_b
 
@@ -2186,6 +2334,7 @@ def build_channel_diagnostic_figure(
     signals: Dict[str, np.ndarray],
     positive_thresholds: Dict[str, PositiveThresholdInfo],
     roi_mask: np.ndarray,
+    config: AnalysisConfig,
     diagnostics_dir: Path,
 ) -> Optional[Path]:
     if image.ndim != 3:
@@ -2198,24 +2347,61 @@ def build_channel_diagnostic_figure(
         for idx, name in enumerate(resolution.channel_order)
         if idx < image.shape[-1]
     }
-    raw_merged = build_merged_preview(raw_channels, thresholded=False)
-    denoised_merged = build_merged_preview(signals, positive_thresholds=positive_thresholds, thresholded=True)
+    raw_merged = build_merged_preview(raw_channels, thresholded=False, channel_colors=config.channel_colors)
+    denoised_merged = build_merged_preview(
+        signals,
+        positive_thresholds=positive_thresholds,
+        thresholded=True,
+        min_positive_object_area=config.min_positive_object_area,
+        positive_object_area_rules=config.positive_object_area_rules,
+        channel_colors=config.channel_colors,
+    )
 
     top_row: List[Tuple[str, np.ndarray]] = [("Raw merged", raw_merged)]
     bottom_row: List[Tuple[str, np.ndarray]] = [("Thresholded merged", denoised_merged)]
 
     for idx in range(n_channels):
         name = resolution.channel_order[idx]
-        top_row.append((f"idx {idx}\n{name}", robust_normalize_for_display(image[..., idx])))
+        top_row.append(
+            (
+                f"idx {idx}\n{name}",
+                render_channel_panel(
+                    image[..., idx],
+                    channel_name=name,
+                    display_mode=config.raw_channel_display_mode,
+                    channel_colors=config.channel_colors,
+                ),
+            )
+        )
 
         threshold_info = positive_thresholds.get(name)
         if name in signals and threshold_info is not None:
-            preview = make_thresholded_preview(signals[name], threshold_info.threshold)
-            positive_fraction = positive_fraction_in_roi(signals[name], roi_mask, threshold_info.threshold)
+            channel_min_area = resolve_positive_object_area(
+                name,
+                default_min_area=config.min_positive_object_area,
+                area_rules=config.positive_object_area_rules,
+            )
+            preview = make_thresholded_preview_with_cleanup(
+                signals[name],
+                threshold_info.threshold,
+                min_area=channel_min_area,
+            )
+            positive_fraction = positive_fraction_in_roi(
+                signals[name],
+                roi_mask,
+                threshold_info.threshold,
+                min_area=channel_min_area,
+            )
             bottom_row.append(
                 (
                     f"{name} positive preview\nthr={threshold_info.threshold:.4g} | roi+={positive_fraction:.2%}",
-                    apply_colormap_to_u8(robust_normalize_for_display(preview), cmap_name="inferno"),
+                    render_positive_preview_panel(
+                        preview,
+                        channel_name=name,
+                        display_mode=config.positive_preview_display_mode,
+                        cmap_name=config.positive_preview_colormap,
+                        channel_colors=config.channel_colors,
+                    ),
                 )
             )
         else:
@@ -2262,7 +2448,15 @@ def build_qc_figure(
 
     dapi_idx = resolution.channel_to_index.get(config.dapi_channel, -1)
     qc_panels: List[Tuple[str, np.ndarray]] = [
-        (f"{config.dapi_channel} raw (idx {dapi_idx})", dapi_u8)
+        (
+            f"{config.dapi_channel} raw (idx {dapi_idx})",
+            render_channel_panel(
+                dapi,
+                channel_name=config.dapi_channel,
+                display_mode=config.raw_channel_display_mode,
+                channel_colors=config.channel_colors,
+            ),
+        )
     ]
 
     overlay = np.dstack([dapi_u8, dapi_u8, dapi_u8]).astype(np.uint8)
@@ -2277,19 +2471,43 @@ def build_qc_figure(
         raw = raw_channels.get(channel_name, dapi)
         signal = signals.get(channel_name, dapi)
         threshold_info = positive_thresholds.get(channel_name)
+        channel_min_area = resolve_positive_object_area(
+            channel_name,
+            default_min_area=config.min_positive_object_area,
+            area_rules=config.positive_object_area_rules,
+        )
         preview = (
-            make_thresholded_preview(signal, threshold_info.threshold)
+            make_thresholded_preview_with_cleanup(
+                signal,
+                threshold_info.threshold,
+                min_area=channel_min_area,
+            )
             if threshold_info is not None
             else signal
         )
         positive_fraction = (
-            positive_fraction_in_roi(signal, roi_mask, threshold_info.threshold)
+            positive_fraction_in_roi(
+                signal,
+                roi_mask,
+                threshold_info.threshold,
+                min_area=channel_min_area,
+            )
             if threshold_info is not None
             else float("nan")
         )
 
         channel_idx = resolution.channel_to_index.get(channel_name, -1)
-        qc_panels.append((f"{channel_name} raw (idx {channel_idx})", robust_normalize_for_display(raw)))
+        qc_panels.append(
+            (
+                f"{channel_name} raw (idx {channel_idx})",
+                render_channel_panel(
+                    raw,
+                    channel_name=channel_name,
+                    display_mode=config.raw_channel_display_mode,
+                    channel_colors=config.channel_colors,
+                ),
+            )
+        )
         correction_info = corrections.get(channel_name)
         if correction_info and correction_info.applied:
             threshold_text = f"{threshold_info.threshold:.4g}" if threshold_info is not None else "NA"
@@ -2302,10 +2520,29 @@ def build_qc_figure(
             )
         else:
             preview_title = f"{channel_name} bg-subtracted"
-        qc_panels.append((preview_title, apply_colormap_to_u8(robust_normalize_for_display(preview), cmap_name="inferno")))
+        qc_panels.append(
+            (
+                preview_title,
+                render_positive_preview_panel(
+                    preview,
+                    channel_name=channel_name,
+                    display_mode=config.positive_preview_display_mode,
+                    cmap_name=config.positive_preview_colormap,
+                    channel_colors=config.channel_colors,
+                ),
+            )
+        )
         merged_channels[channel_name] = preview
 
-    qc_panels.append(("Merged QC (thresholded)", build_merged_preview(merged_channels, thresholded=False)))
+    merged_thresholded = build_merged_preview(
+        signals,
+        positive_thresholds=positive_thresholds,
+        thresholded=True,
+        min_positive_object_area=config.min_positive_object_area,
+        positive_object_area_rules=config.positive_object_area_rules,
+        channel_colors=config.channel_colors,
+    )
+    qc_panels.append(("Merged QC (thresholded)", merged_thresholded))
 
     method_text = resolution.method or "auto"
     out_path = qc_dir / f"{build_output_basename(group_name, image_path)}_qc.png"
@@ -2326,6 +2563,8 @@ def build_bleedthrough_diagnostic_figure(
     source_contribution: np.ndarray,
     corrected_signal: np.ndarray,
     info: BleedthroughCorrectionInfo,
+    raw_channel_display_mode: str,
+    channel_colors: Optional[Dict[str, Tuple[int, int, int]]],
     diagnostics_dir: Path,
 ) -> Optional[Path]:
     if not info.applied:
@@ -2335,19 +2574,47 @@ def build_bleedthrough_diagnostic_figure(
     make_output_dir(out_dir)
 
     fig, axes = plt.subplots(1, 4, figsize=(18, 4.4))
-    axes[0].imshow(robust_normalize_for_display(raw_channel), cmap="gray")
+    axes[0].imshow(
+        render_channel_panel(
+            raw_channel,
+            channel_name=channel_name,
+            display_mode=raw_channel_display_mode,
+            channel_colors=channel_colors,
+        )
+    )
     axes[0].set_title(f"{channel_name} raw")
     axes[0].axis("off")
 
-    axes[1].imshow(robust_normalize_for_display(uncorrected_signal), cmap="gray")
+    axes[1].imshow(
+        render_channel_panel(
+            uncorrected_signal,
+            channel_name=channel_name,
+            display_mode=raw_channel_display_mode,
+            channel_colors=channel_colors,
+        )
+    )
     axes[1].set_title(f"{channel_name} bg-subtracted")
     axes[1].axis("off")
 
-    axes[2].imshow(robust_normalize_for_display(source_contribution), cmap="gray")
+    axes[2].imshow(
+        render_channel_panel(
+            source_contribution,
+            channel_name=source_channel_name or info.source_channel or channel_name,
+            display_mode=raw_channel_display_mode,
+            channel_colors=channel_colors,
+        )
+    )
     axes[2].set_title(f"{info.source_channel} contribution\n(k={info.coefficient:.3g})")
     axes[2].axis("off")
 
-    axes[3].imshow(robust_normalize_for_display(corrected_signal), cmap="gray")
+    axes[3].imshow(
+        render_channel_panel(
+            corrected_signal,
+            channel_name=channel_name,
+            display_mode=raw_channel_display_mode,
+            channel_colors=channel_colors,
+        )
+    )
     axes[3].set_title(f"{channel_name} corrected")
     axes[3].axis("off")
 
@@ -2412,13 +2679,19 @@ def analyze_loaded_image(
                 roi_mask=roi_mask,
                 nuclei_mask=nuclei_mask,
                 background_percentile=config.background_percentile,
+                background_percentile_rules=config.background_percentile_rules,
                 bleedthrough_rules=bleedthrough_rules,
             )
         else:
+            channel_bg_percentile = resolve_background_percentile(
+                channel_name,
+                default_percentile=config.background_percentile,
+                percentile_rules=config.background_percentile_rules,
+            )
             signal, bg = prepare_signal(
                 channel_arrays[channel_name],
                 roi_mask=roi_mask,
-                background_percentile=config.background_percentile,
+                background_percentile=channel_bg_percentile,
             )
             correction_info = BleedthroughCorrectionInfo(
                 applied=False,
@@ -2494,6 +2767,11 @@ def analyze_loaded_image(
             result[f"{channel_name}_positive_threshold_note"] = threshold_info.note
 
     for channel_name in config.intensity_channels:
+        channel_min_area = resolve_positive_object_area(
+            channel_name,
+            default_min_area=config.min_positive_object_area,
+            area_rules=config.positive_object_area_rules,
+        )
         result.update(
             compute_intensity_metrics(
                 channel_name=channel_name,
@@ -2505,10 +2783,21 @@ def analyze_loaded_image(
                 dapi_name=config.dapi_channel,
                 background_value=backgrounds[channel_name],
                 positive_threshold=positive_thresholds[channel_name],
+                min_positive_object_area=channel_min_area,
             )
         )
 
     for channel_a, channel_b in config.colocalization_pairs:
+        min_area_a = resolve_positive_object_area(
+            channel_a,
+            default_min_area=config.min_positive_object_area,
+            area_rules=config.positive_object_area_rules,
+        )
+        min_area_b = resolve_positive_object_area(
+            channel_b,
+            default_min_area=config.min_positive_object_area,
+            area_rules=config.positive_object_area_rules,
+        )
         result.update(
             compute_colocalization(
                 channel_a_name=channel_a,
@@ -2518,6 +2807,8 @@ def analyze_loaded_image(
                 roi_mask=roi_mask,
                 threshold_a=positive_thresholds[channel_a],
                 threshold_b=positive_thresholds[channel_b],
+                min_positive_object_area_a=min_area_a,
+                min_positive_object_area_b=min_area_b,
             )
         )
 
@@ -2526,6 +2817,9 @@ def analyze_loaded_image(
         group_name=group_name,
         channel_images=signals,
         merged_dir=merged_dir,
+        min_positive_object_area=config.min_positive_object_area,
+        positive_object_area_rules=config.positive_object_area_rules,
+        channel_colors=config.channel_colors,
     )
     result["merged_denoised_path"] = str(merged_path) if merged_path is not None else ""
 
@@ -2555,6 +2849,7 @@ def analyze_loaded_image(
             signals=signals,
             positive_thresholds=positive_thresholds,
             roi_mask=roi_mask,
+            config=config,
             diagnostics_dir=diagnostics_dir,
         )
     result["channel_diagnostic_path"] = str(diag_path) if diag_path is not None else ""
@@ -2572,6 +2867,8 @@ def analyze_loaded_image(
                 source_contribution=source_contributions[channel_name],
                 corrected_signal=signals[channel_name],
                 info=correction_info,
+                raw_channel_display_mode=config.raw_channel_display_mode,
+                channel_colors=config.channel_colors,
                 diagnostics_dir=diagnostics_dir,
             )
             if bt_path is not None:
@@ -2945,6 +3242,10 @@ def write_text_report(
     lines.append(f"STRICT_CHANNEL_DETECTION: {config.strict_channel_detection}")
     lines.append(f"Fallback channel order: {config.fallback_channel_order}")
     lines.append(f"Positive threshold rules: {json.dumps(config.positive_threshold_rules, ensure_ascii=False)}")
+    lines.append(f"Background percentile default: {config.background_percentile}")
+    lines.append(f"Background percentile rules: {json.dumps(config.background_percentile_rules, ensure_ascii=False)}")
+    lines.append(f"Min positive object area (default): {config.min_positive_object_area}")
+    lines.append(f"Positive object area rules: {json.dumps(config.positive_object_area_rules, ensure_ascii=False)}")
     lines.append(f"ENABLE_BLEEDTHROUGH_CORRECTION: {config.enable_bleedthrough_correction}")
     lines.append(f"SAVE_BLEEDTHROUGH_DIAGNOSTICS: {config.save_bleedthrough_diagnostics}")
     lines.append(f"Bleedthrough rules: {json.dumps(config.bleedthrough_rules, ensure_ascii=False)}")
@@ -2952,6 +3253,10 @@ def write_text_report(
     lines.append(f"Intensity channels: {config.intensity_channels}")
     lines.append(f"Auto colocalization pairs: {config.auto_colocalization_pairs}")
     lines.append(f"Colocalization pairs: {config.colocalization_pairs}")
+    lines.append(f"Channel colors: {json.dumps(config.channel_colors, ensure_ascii=False)}")
+    lines.append(f"Raw channel display mode: {config.raw_channel_display_mode}")
+    lines.append(f"Positive preview display mode: {config.positive_preview_display_mode}")
+    lines.append(f"Positive preview colormap: {config.positive_preview_colormap}")
     lines.append(f"Filename role map: {json.dumps(config.filename_role_map, ensure_ascii=False)}")
     lines.append(f"Filename channel map: {json.dumps(config.filename_channel_map, ensure_ascii=False)}")
     lines.append("")
@@ -3037,9 +3342,17 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
     print(f"Auto detect channels   : {config.auto_detect_channels}")
     print(f"Strict detection       : {config.strict_channel_detection}")
     print(f"Positive thresholds    : {json.dumps(config.positive_threshold_rules, ensure_ascii=False)}")
+    print(f"Background pct default : {config.background_percentile}")
+    print(f"Background pct rules   : {json.dumps(config.background_percentile_rules, ensure_ascii=False)}")
+    print(f"Min positive obj area  : {config.min_positive_object_area}")
+    print(f"Positive obj area rules: {json.dumps(config.positive_object_area_rules, ensure_ascii=False)}")
     print(f"Intensity channels     : {config.intensity_channels}")
     print(f"Auto coloc pairs       : {config.auto_colocalization_pairs}")
     print(f"Colocalization pairs   : {config.colocalization_pairs}")
+    print(f"Channel colors         : {json.dumps(config.channel_colors, ensure_ascii=False)}")
+    print(f"Raw channel display    : {config.raw_channel_display_mode}")
+    print(f"Positive preview mode  : {config.positive_preview_display_mode}")
+    print(f"Positive preview cmap  : {config.positive_preview_colormap}")
     print(f"Filename role map      : {json.dumps(config.filename_role_map, ensure_ascii=False)}")
     print(f"Filename channel map   : {json.dumps(config.filename_channel_map, ensure_ascii=False)}")
     print(f"Output                 : {run_dir}")
@@ -3204,6 +3517,17 @@ def parse_filename_role_map(raw_items: Sequence[str]) -> Dict[str, str]:
     return out
 
 
+def parse_channel_int_map(raw_items: Sequence[str], item_name: str) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for item in raw_items:
+        parts = re.split(r"[:=]", str(item), maxsplit=1)
+        parts = [x.strip() for x in parts if x.strip()]
+        if len(parts) != 2:
+            raise ValueError(f"{item_name} 格式错误: {item}，请使用 488:100 这样的格式。")
+        out[parts[0]] = int(float(parts[1]))
+    return out
+
+
 def build_default_config() -> AnalysisConfig:
     file_channel_order = globals().get("FILE_CHANNEL_ORDER", None)
     if file_channel_order is not None:
@@ -3243,10 +3567,17 @@ def build_default_config() -> AnalysisConfig:
         image_patterns=list(IMAGE_PATTERNS),
         recursive_scan=RECURSIVE_SCAN,
         background_percentile=BACKGROUND_PERCENTILE,
+        background_percentile_rules=json.loads(json.dumps(BACKGROUND_PERCENTILE_RULES)),
         min_nucleus_area=MIN_NUCLEUS_AREA,
+        min_positive_object_area=MIN_POSITIVE_OBJECT_AREA,
+        positive_object_area_rules=json.loads(json.dumps(POSITIVE_OBJECT_AREA_RULES)),
         gaussian_blur_size=GAUSSIAN_BLUR_SIZE,
         min_peak_distance=MIN_PEAK_DISTANCE,
         mask_dilation_radius=MASK_DILATION_RADIUS,
+        channel_colors=json.loads(json.dumps(CHANNEL_COLORS)),
+        raw_channel_display_mode=str(RAW_CHANNEL_DISPLAY_MODE),
+        positive_preview_display_mode=str(POSITIVE_PREVIEW_DISPLAY_MODE),
+        positive_preview_colormap=str(POSITIVE_PREVIEW_COLORMAP),
         save_qc_overlays=SAVE_QC_OVERLAYS,
         save_figure_pdf=SAVE_FIGURE_PDF,
         save_figure_png=SAVE_FIGURE_PNG,
@@ -3284,9 +3615,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recursive-scan", action="store_true", help="递归扫描子文件夹")
     parser.add_argument("--background-percentile", type=float, help="背景分位数")
     parser.add_argument("--min-nucleus-area", type=int, help="最小核面积")
+    parser.add_argument("--min-positive-object-area", type=int, help="阈值后最小阳性区域面积；用于去除 marker 碎点")
+    parser.add_argument("--positive-object-area-rules", nargs="+", help="按通道覆盖阳性碎点面积，如 488:50 594:120")
     parser.add_argument("--gaussian-blur-size", type=int, help="DAPI 平滑核大小")
     parser.add_argument("--min-peak-distance", type=int, help="watershed 种子最小距离")
     parser.add_argument("--mask-dilation-radius", type=int, help="DAPI 掩膜扩张像素")
+    parser.add_argument("--raw-channel-display-mode", type=str, help="原始单通道显示方式：gray / color")
+    parser.add_argument("--positive-preview-display-mode", type=str, help="阳性预览显示方式：colormap / color / gray")
+    parser.add_argument("--positive-preview-colormap", type=str, help="阳性预览 colormap，如 inferno / magma / gray")
     parser.add_argument("--no-qc", action="store_true", help="不保存 QC 叠加图")
     return parser
 
@@ -3348,12 +3684,25 @@ def apply_cli_overrides(config: AnalysisConfig, args: argparse.Namespace) -> Ana
         config.background_percentile = float(args.background_percentile)
     if args.min_nucleus_area is not None:
         config.min_nucleus_area = int(args.min_nucleus_area)
+    if args.min_positive_object_area is not None:
+        config.min_positive_object_area = int(args.min_positive_object_area)
+    if args.positive_object_area_rules:
+        config.positive_object_area_rules = parse_channel_int_map(
+            args.positive_object_area_rules,
+            item_name="positive object area rules",
+        )
     if args.gaussian_blur_size is not None:
         config.gaussian_blur_size = int(args.gaussian_blur_size)
     if args.min_peak_distance is not None:
         config.min_peak_distance = int(args.min_peak_distance)
     if args.mask_dilation_radius is not None:
         config.mask_dilation_radius = int(args.mask_dilation_radius)
+    if args.raw_channel_display_mode:
+        config.raw_channel_display_mode = str(args.raw_channel_display_mode)
+    if args.positive_preview_display_mode:
+        config.positive_preview_display_mode = str(args.positive_preview_display_mode)
+    if args.positive_preview_colormap:
+        config.positive_preview_colormap = str(args.positive_preview_colormap)
     if args.no_qc:
         config.save_qc_overlays = False
     return config
