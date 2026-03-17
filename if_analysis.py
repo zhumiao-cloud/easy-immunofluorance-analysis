@@ -85,23 +85,67 @@ except Exception:
 # 用户配置区：绝大多数情况下，只需要修改这一段
 # ============================================================================
 
-GROUP1_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/p21/3m"
-GROUP2_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/p21/22m"
+GROUP1_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/cd11c_cd31_cxcr4/3m"
+GROUP2_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/cd11c_cd31_cxcr4/22m"
 GROUP1_NAME = "3m"
 GROUP2_NAME = "22m"
 OUTPUT_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/if_analysis_results"
 
-# 手动指定文件中的通道顺序（按读入后的 index 顺序写）
-# - 如果你明确知道真实顺序，直接填写，例如：
-#     FILE_CHANNEL_ORDER = ["594", "488", "DAPI"]
-# - 如果不确定，设为 None，让脚本自动检测 metadata / RGB 颜色语义
-FILE_CHANNEL_ORDER: Optional[List[str]] = None #  如果染色为 647和 488，这里要改一下["647", "488", "DAPI"]
+# 输入模式：
+# - "auto"           : 自动识别。若子文件夹中识别到单通道图，则按“样本文件夹模式”分析；否则按“直接图片模式”分析
+# - "sample_folders" : 只分析 GROUP1_DIR / GROUP2_DIR 下的样本子文件夹
+# - "image_files"    : 只分析 GROUP1_DIR / GROUP2_DIR 下直接扫描到的图片文件
+INPUT_DISCOVERY_MODE = "auto"
+
+# 通道配置：大多数情况下只需要改这一段
+DAPI_CHANNEL = "DAPI"
+ANALYSIS_CHANNELS = ["488", "594", "647"]
+
+# 如果某些文件并不是分析通道，而是 overlay / merge / composite 等展示图，
+# 可在这里配置“文件名关键字 -> 文件角色”。
+# 支持的角色：
+# - "overlay": 当作 overlay/composite 图忽略
+# - "ignore" : 直接忽略，效果与 overlay 相同
+# 例如如果你的 overlay 文件名是 40X_CH0.tif，可写成 "CH0": "overlay"
+FILENAME_ROLE_MAP = {
+    "OVERLAY": "overlay",
+    "MERGE": "overlay",
+    "MERGED": "overlay",
+    "COMPOSITE": "overlay",
+    "RGB": "overlay",
+}
+
+# 如果单通道文件名不直接写 DAPI/488/594/647，可在这里配置“文件名关键字 -> 通道名”。
+# 例如文件名里包含 CH1/CH2/CH3/CH4 时，可写成：
+FILENAME_CHANNEL_MAP = {
+    "CH1": DAPI_CHANNEL,
+    "CH2": "488",
+    "CH3": "594",
+    "CH4": "647",
+}
+
+# 手动指定多通道文件中的通道顺序（只对单个多通道 TIFF / PNG / JPG 输入生效）。
+# 如果你明确知道真实顺序，直接填写，例如：
+# FILE_CHANNEL_ORDER = ["647", "594", "488", "DAPI"]
+# 如果不确定，设为 None，让脚本自动检测 metadata / RGB 颜色语义。
+FILE_CHANNEL_ORDER: Optional[List[str]] = None
+
+# 共定位/相关性统计：
+# - True  : 自动对 ANALYSIS_CHANNELS 生成全部两两组合
+# - False : 仅使用 MANUAL_COLOCALIZATION_PAIRS
+AUTO_ALL_PAIRWISE_STATS = True
+MANUAL_COLOCALIZATION_PAIRS: List[Tuple[str, str]] = []
+
+# 下面这些会根据上面的主配置自动生成，一般不需要再改
+INTENSITY_CHANNELS = list(ANALYSIS_CHANNELS)
+AUTO_COLOCALIZATION_PAIRS = bool(AUTO_ALL_PAIRWISE_STATS)
+COLOCALIZATION_PAIRS = list(MANUAL_COLOCALIZATION_PAIRS)
+FALLBACK_CHANNEL_ORDER = [DAPI_CHANNEL] + [x for x in INTENSITY_CHANNELS if x != DAPI_CHANNEL]
 
 # 自动通道检测
 AUTO_DETECT_CHANNELS = True
 STRICT_CHANNEL_DETECTION = True  # 模糊时直接报错，避免静默错配
 SAVE_CHANNEL_DIAGNOSTICS = True  # 保存每个 raw index 的诊断图
-FALLBACK_CHANNEL_ORDER = ["DAPI", "488", "594", "647"]  # 仅在关闭 strict 时作为兜底顺序
 
 # 阳性阈值
 # 作用：
@@ -122,38 +166,52 @@ FALLBACK_CHANNEL_ORDER = ["DAPI", "488", "594", "647"]  # 仅在关闭 strict �
 # 修改594阈值，建议采用 Otsu 自动阈值乘以 1.8 倍缩放（scale）并设定 30 为下限，使 594 信号避免将弱噪声误判为阳性，
 # 若噪声仍偏多可上调 scale 至 2.0–2.2，若真信号被过度压制则下调至 1.4–1.6，亦可直接通过 {"method": "manual", "value": 80} 完全手动指定阈值。
 POSITIVE_THRESHOLD_RULES = {
-    "594": {"method": "otsu", "scale": 1.6, "min_value": 30.0}  
+    "594": {"method": "otsu", "scale": 2, "min_value": 30.0},
+    "488": {"method": "otsu", "scale": 2, "min_value": 30.0},
+    "647": {"method": "otsu", "scale": 2, "min_value": 30.0}      
 }
 
 
 # 串色 / bleed-through 校正
 # 适用场景：
 # - 现在通道顺序已经正确
-# - 但 488 原始 plane 中仍混入了 DAPI 结构（看起来像 "DAPI + 488"）
+# - 但某个目标通道中仍混入了另一个 source 通道的结构
 # 核心思想：
-#   corrected_488 = max((488 - bg488) - k * (DAPI - bgDAPI), 0)
-# 这不是“按颜色筛选”，而是按线性串色模型扣除 DAPI 对 488 的贡献。
+#   corrected_target = max((target - bgtarget) - k * (source - bgsource), 0)
+# 这不是“按颜色筛选”，而是按线性串色模型扣除 source 对 target 的贡献。
+# 如果发现 594 混入了 DAPI，就写 "594": DAPI_CHANNEL
+# 如果发现 647 混入了 488，就写 "647": "488"
+# 单文件模式和样本文件夹模式都会共用这套规则。
 ENABLE_BLEEDTHROUGH_CORRECTION = True
 SAVE_BLEEDTHROUGH_DIAGNOSTICS = True
 
-BLEEDTHROUGH_RULES: Dict[str, Dict[str, Any]] = {
-    "488": {
-        "source": "DAPI",                # 从哪个通道扣除串色
-        "mode": "auto",                  # "auto" 或 "manual"
-        "coefficient": 0.18,             # mode="manual" 时使用；auto 模式下会忽略
-        "estimate_mask": "nuclei",       # "nuclei" / "roi" / "all"
-        "ratio_percentile": 20.0,        # auto 模式：取较低分位，尽量避免过度扣除
-        "source_threshold_percentile": 75.0,  # auto 模式：只在 source 较强像素上估计
-        "min_pixels": 100,               # auto 模式：最少用于估计的像素数
-        "max_coefficient": 3.0,          # auto 模式：k 的上限，避免异常值
-    }
+BLEEDTHROUGH_SOURCE_MAP = {
+    "488": DAPI_CHANNEL,
+    # "594": DAPI_CHANNEL,
+    # "647": "488",
 }
 
-# DAPI 及需要分析的通道
-DAPI_CHANNEL = "DAPI"
-INTENSITY_CHANNELS = ["488", "594"]  # 如果要同时分析 488/594/647，可改成 ["488", "594", "647"]
-AUTO_COLOCALIZATION_PAIRS = True     # True: 自动对 INTENSITY_CHANNELS 生成全部两两组合
-COLOCALIZATION_PAIRS: List[Tuple[str, str]] = []  # 仅在 AUTO_COLOCALIZATION_PAIRS=False 时生效
+# 所有自动串色规则默认共用这组参数；通常不需要每个通道单独再写一遍。
+BLEEDTHROUGH_DEFAULT_RULE: Dict[str, Any] = {
+    "mode": "auto",                     # "auto" 或 "manual"
+    "estimate_mask": "nuclei",          # "nuclei" / "roi" / "all"
+    "ratio_percentile": 20.0,           # auto 模式：取较低分位，尽量避免过度扣除
+    "source_threshold_percentile": 75.0,  # auto 模式：只在 source 较强像素上估计
+    "min_pixels": 100,                  # auto 模式：最少用于估计的像素数
+    "max_coefficient": 3.0,             # auto 模式：k 的上限，避免异常值
+}
+
+# 如果某个目标通道想改成手动系数，只需要在这里填一个数字。
+# 例如：{"647": 0.12}
+BLEEDTHROUGH_MANUAL_COEFFICIENTS: Dict[str, float] = {}
+
+# 高级覆盖：只有在某个通道需要与默认参数不同的 mode / mask / percentile 时再填写。
+# 例如：
+# BLEEDTHROUGH_RULE_OVERRIDES = {
+#     "594": {"source": DAPI_CHANNEL, "estimate_mask": "roi"},
+#     "647": {"source": "488", "mode": "manual", "coefficient": 0.12},
+# }
+BLEEDTHROUGH_RULE_OVERRIDES: Dict[str, Dict[str, Any]] = {}
 
 # 文件扫描
 IMAGE_PATTERNS = ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"]
@@ -178,7 +236,7 @@ FIGURE_DPI = 500
 # ============================================================================
 
 SIGNIFICANCE_LEVELS = [(0.001, "***"), (0.01, "**"), (0.05, "*")]
-DEFAULT_GROUP_COLORS = ("#4472C4", "#ED7D31")
+DEFAULT_GROUP_COLORS = ("#4472C4", "#ED7D31","#A747BE")
 MIN_PIXELS_FOR_COLOC = 10
 ALLOWED_CHANNEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_\-+.]+$")
 CANONICAL_CHANNELS = ("DAPI", "488", "594", "647")
@@ -196,6 +254,7 @@ class AnalysisConfig:
     group2_name: str
     output_dir: Path
 
+    input_discovery_mode: str
     file_channel_order: Optional[List[str]]
     auto_detect_channels: bool
     strict_channel_detection: bool
@@ -211,6 +270,8 @@ class AnalysisConfig:
     intensity_channels: List[str]
     auto_colocalization_pairs: bool
     colocalization_pairs: List[Tuple[str, str]]
+    filename_role_map: Dict[str, str]
+    filename_channel_map: Dict[str, str]
 
     image_patterns: List[str] = field(default_factory=lambda: ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"])
     recursive_scan: bool = False
@@ -268,6 +329,22 @@ class ImageAnalysisResult:
     values: Dict[str, Any]
     roi_mask: np.ndarray
     nuclei_labels: np.ndarray
+
+
+@dataclass
+class SampleFolderContents:
+    sample_dir: Path
+    channel_files: Dict[str, Path]
+    duplicate_channel_files: Dict[str, List[Path]] = field(default_factory=dict)
+    overlay_files: List[Path] = field(default_factory=list)
+    unclassified_files: List[Path] = field(default_factory=list)
+
+
+@dataclass
+class AnalysisInput:
+    path: Path
+    source_mode: str
+    sample_contents: Optional[SampleFolderContents] = None
 
 
 # ============================================================================
@@ -374,6 +451,110 @@ def build_output_basename(group_name: str, image_path: Path) -> str:
     image_token = sanitize_filename(image_path.stem)
     digest = hashlib.md5(str(image_path.resolve()).encode("utf-8")).hexdigest()[:8]
     return f"{group_token}__{image_token}__{digest}"
+
+
+def normalize_filename_role_map(raw_map: Dict[str, str]) -> Dict[str, str]:
+    normalized: Dict[str, str] = {}
+    role_aliases = {
+        "OVERLAY": "overlay",
+        "MERGE": "overlay",
+        "MERGED": "overlay",
+        "COMPOSITE": "overlay",
+        "RGB": "overlay",
+        "IGNORE": "ignore",
+        "IGNORED": "ignore",
+        "SKIP": "ignore",
+        "EXCLUDE": "ignore",
+    }
+    for raw_token, raw_role in (raw_map or {}).items():
+        token = simplify_token(raw_token)
+        if not token:
+            raise ValueError("FILENAME_ROLE_MAP 中存在空关键字。")
+        role_key = simplify_token(raw_role)
+        if role_key not in role_aliases:
+            raise ValueError(
+                f"FILENAME_ROLE_MAP 中存在不支持的角色: {raw_role}。"
+                " 可选值: overlay / ignore"
+            )
+        normalized[token] = role_aliases[role_key]
+    return normalized
+
+
+def match_filename_role(text: str, filename_role_map: Dict[str, str]) -> Optional[str]:
+    raw_text = str(text).upper()
+    simplified_text = simplify_token(text)
+    for token, role_name in sorted(filename_role_map.items(), key=lambda item: (-len(item[0]), item[0])):
+        if re.search(rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])", raw_text):
+            return role_name
+        if simplified_text == token or simplified_text.startswith(token) or simplified_text.endswith(token):
+            return role_name
+    return None
+
+
+def infer_file_role_from_path(path: Path, filename_role_map: Optional[Dict[str, str]] = None) -> Optional[str]:
+    candidates = [
+        path.stem,
+        path.name,
+        path.stem.replace("_", " "),
+        path.stem.replace("-", " "),
+    ]
+    for candidate in candidates:
+        if filename_role_map:
+            role = match_filename_role(candidate, filename_role_map)
+            if role is not None:
+                return role
+    return None
+
+
+def is_overlay_like_path(path: Path, filename_role_map: Optional[Dict[str, str]] = None) -> bool:
+    role = infer_file_role_from_path(path, filename_role_map=filename_role_map)
+    if role in {"overlay", "ignore"}:
+        return True
+    token = simplify_token(path.stem)
+    overlay_tokens = ("OVERLAY", "MERGE", "MERGED", "COMPOSITE", "RGB")
+    return any(item in token for item in overlay_tokens)
+
+
+def normalize_filename_channel_map(raw_map: Dict[str, str]) -> Dict[str, str]:
+    normalized: Dict[str, str] = {}
+    for raw_token, raw_channel in raw_map.items():
+        token = simplify_token(raw_token)
+        if not token:
+            raise ValueError("FILENAME_CHANNEL_MAP 中存在空关键字。")
+        channel_name = normalize_channel_name(raw_channel)
+        if channel_name not in CANONICAL_CHANNELS:
+            raise ValueError(f"FILENAME_CHANNEL_MAP 中存在不支持的通道名: {raw_channel}")
+        normalized[token] = channel_name
+    return normalized
+
+
+def match_filename_channel(text: str, filename_channel_map: Dict[str, str]) -> Optional[str]:
+    raw_text = str(text).upper()
+    simplified_text = simplify_token(text)
+    for token, channel_name in sorted(filename_channel_map.items(), key=lambda item: (-len(item[0]), item[0])):
+        if re.search(rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])", raw_text):
+            return channel_name
+        if simplified_text == token or simplified_text.startswith(token) or simplified_text.endswith(token):
+            return channel_name
+    return None
+
+
+def infer_channel_from_path(path: Path, filename_channel_map: Optional[Dict[str, str]] = None) -> Optional[str]:
+    candidates = [
+        path.stem,
+        path.name,
+        path.stem.replace("_", " "),
+        path.stem.replace("-", " "),
+    ]
+    for candidate in candidates:
+        if filename_channel_map:
+            mapped = match_filename_channel(candidate, filename_channel_map)
+            if mapped is not None:
+                return mapped
+        canonical = canonicalize_channel_label(candidate)
+        if canonical is not None:
+            return canonical
+    return None
 
 
 def build_all_channel_pairs(channel_names: Sequence[str]) -> List[Tuple[str, str]]:
@@ -644,6 +825,15 @@ def save_lossless_panel_grid(
     return out_path
 
 
+def save_rgb_image(out_path: Path, image: np.ndarray) -> Path:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    rgb = ensure_rgb_uint8(image)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    if not cv2.imwrite(str(out_path), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 0]):
+        raise IOError(f"无法保存图片: {out_path}")
+    return out_path
+
+
 def build_merged_preview(
     channel_images: Dict[str, np.ndarray],
     positive_thresholds: Optional[Dict[str, PositiveThresholdInfo]] = None,
@@ -681,6 +871,20 @@ def build_merged_preview(
         merged[..., 2] = np.maximum(merged[..., 2], np.clip(np.round(ch647_u8 * 0.7), 0, 255).astype(np.uint8))
 
     return merged
+
+
+def build_denoised_merged_image(
+    image_path: Path,
+    group_name: str,
+    channel_images: Dict[str, np.ndarray],
+    merged_dir: Path,
+) -> Optional[Path]:
+    if not channel_images:
+        return None
+    make_output_dir(merged_dir)
+    merged = build_merged_preview(channel_images, thresholded=False)
+    out_path = merged_dir / f"{build_output_basename(group_name, image_path)}_merged_denoised.png"
+    return save_rgb_image(out_path, merged)
 
 
 def bh_fdr(p_values: Sequence[float]) -> np.ndarray:
@@ -748,6 +952,105 @@ def discover_images(folder: Path, patterns: Sequence[str], recursive: bool = Fal
 
     unique_paths = sorted({path.resolve() for path in found if path.is_file()}, key=natural_sort_key)
     return [Path(path) for path in unique_paths]
+
+
+def inspect_sample_folder(
+    sample_dir: Path,
+    patterns: Sequence[str],
+    filename_channel_map: Optional[Dict[str, str]] = None,
+    filename_role_map: Optional[Dict[str, str]] = None,
+) -> SampleFolderContents:
+    files = discover_images(sample_dir, patterns, recursive=False)
+    channel_files: Dict[str, Path] = {}
+    duplicate_channel_files: Dict[str, List[Path]] = {}
+    overlay_files: List[Path] = []
+    unclassified_files: List[Path] = []
+
+    for file_path in files:
+        if is_overlay_like_path(file_path, filename_role_map=filename_role_map):
+            overlay_files.append(file_path)
+            continue
+
+        channel_name = infer_channel_from_path(file_path, filename_channel_map=filename_channel_map)
+        if channel_name is None:
+            unclassified_files.append(file_path)
+            continue
+
+        if channel_name in channel_files:
+            duplicate_channel_files.setdefault(channel_name, [channel_files[channel_name]]).append(file_path)
+            continue
+
+        channel_files[channel_name] = file_path
+
+    return SampleFolderContents(
+        sample_dir=sample_dir,
+        channel_files=channel_files,
+        duplicate_channel_files=duplicate_channel_files,
+        overlay_files=overlay_files,
+        unclassified_files=unclassified_files,
+    )
+
+
+def looks_like_sample_folder(
+    sample_dir: Path,
+    patterns: Sequence[str],
+    dapi_channel: str,
+    filename_channel_map: Optional[Dict[str, str]] = None,
+    filename_role_map: Optional[Dict[str, str]] = None,
+) -> Optional[SampleFolderContents]:
+    contents = inspect_sample_folder(
+        sample_dir,
+        patterns,
+        filename_channel_map=filename_channel_map,
+        filename_role_map=filename_role_map,
+    )
+    non_dapi_channels = [name for name in contents.channel_files if name != normalize_channel_name(dapi_channel)]
+    if normalize_channel_name(dapi_channel) in contents.channel_files and len(non_dapi_channels) >= 1:
+        return contents
+    return None
+
+
+def discover_analysis_inputs(folder: Path, config: AnalysisConfig) -> List[AnalysisInput]:
+    if not folder.exists():
+        raise FileNotFoundError(f"文件夹不存在: {folder}")
+    if not folder.is_dir():
+        raise NotADirectoryError(f"不是文件夹: {folder}")
+
+    mode = str(config.input_discovery_mode or "auto").strip().lower()
+    candidate_dirs = folder.rglob("*") if config.recursive_scan else folder.iterdir()
+    sample_inputs: List[AnalysisInput] = []
+    sample_dirs: List[Path] = []
+
+    if mode in {"auto", "sample_folders"}:
+        for candidate in sorted((path for path in candidate_dirs if path.is_dir()), key=natural_sort_key):
+            contents = looks_like_sample_folder(
+                candidate,
+                config.image_patterns,
+                config.dapi_channel,
+                filename_channel_map=config.filename_channel_map,
+                filename_role_map=config.filename_role_map,
+            )
+            if contents is None:
+                continue
+            sample_inputs.append(AnalysisInput(path=candidate, source_mode="sample_folder", sample_contents=contents))
+            sample_dirs.append(candidate.resolve())
+
+    if mode == "sample_folders":
+        return sorted(sample_inputs, key=lambda item: natural_sort_key(item.path))
+
+    direct_files = discover_images(folder, config.image_patterns, recursive=config.recursive_scan)
+    direct_inputs: List[AnalysisInput] = []
+    for file_path in direct_files:
+        if mode == "auto" and any(sample_dir in file_path.resolve().parents for sample_dir in sample_dirs):
+            continue
+        direct_inputs.append(AnalysisInput(path=file_path, source_mode="image_file"))
+
+    if mode == "image_files":
+        all_inputs = direct_inputs
+    else:
+        all_inputs = sample_inputs + direct_inputs
+    all_inputs = sorted(all_inputs, key=lambda item: natural_sort_key(item.path))
+    return all_inputs
 
 
 def extract_ome_channel_names(ome_xml: str) -> List[str]:
@@ -891,6 +1194,95 @@ def load_multichannel_image(path: Path) -> ImageLoadResult:
     )
 
 
+def load_single_channel_image(path: Path) -> Tuple[np.ndarray, List[str]]:
+    load_result = load_multichannel_image(path)
+    image = np.asarray(load_result.image, dtype=np.float64)
+    if image.ndim != 3:
+        raise ValueError(f"{path.name} 不是可识别的单通道图像，形状为 {image.shape}。")
+
+    n_channels = int(image.shape[-1])
+    notes = list(load_result.notes)
+    if n_channels == 1:
+        return image[..., 0], notes
+
+    if n_channels in (3, 4):
+        notes.append(f"{path.name} 为 {n_channels} 通道单标记图，按 max(R,G,B[,A]) 压缩为灰度后参与组装。")
+        return np.max(image[..., : min(n_channels, 3)], axis=-1), notes
+
+    raise ValueError(
+        f"{path.name} 读出 {n_channels} 个通道，无法作为单独 marker 图像自动组装。"
+    )
+
+
+def load_sample_folder_multichannel(sample_dir: Path, config: AnalysisConfig) -> Tuple[ImageLoadResult, SampleFolderContents]:
+    contents = inspect_sample_folder(
+        sample_dir,
+        config.image_patterns,
+        filename_channel_map=config.filename_channel_map,
+        filename_role_map=config.filename_role_map,
+    )
+    if contents.duplicate_channel_files:
+        duplicate_text = "; ".join(
+            f"{channel} -> {[path.name for path in paths]}"
+            for channel, paths in sorted(contents.duplicate_channel_files.items())
+        )
+        raise ValueError(f"{sample_dir.name} 中检测到重复通道文件: {duplicate_text}")
+
+    requested_channels = requested_channels_from_config(config)
+    missing_channels = [name for name in requested_channels if name not in contents.channel_files]
+    if missing_channels:
+        available = sorted(contents.channel_files)
+        raise ValueError(
+            f"{sample_dir.name} 缺少请求通道 {missing_channels}。"
+            f" 当前识别到的单通道文件只有: {available}。"
+        )
+
+    ordered_channels = [
+        name
+        for name in unique_in_order(requested_channels + list(CANONICAL_CHANNELS))
+        if name in contents.channel_files
+    ]
+
+    arrays: List[np.ndarray] = []
+    notes: List[str] = [f"由样本文件夹组装多通道图像: {sample_dir}"]
+    reference_shape: Optional[Tuple[int, int]] = None
+
+    for channel_name in ordered_channels:
+        channel_path = contents.channel_files[channel_name]
+        gray_image, image_notes = load_single_channel_image(channel_path)
+        gray_image = np.asarray(gray_image, dtype=np.float64)
+        if gray_image.ndim != 2:
+            raise ValueError(f"{channel_path.name} 压缩后不是 2D 图像，形状为 {gray_image.shape}。")
+
+        if reference_shape is None:
+            reference_shape = gray_image.shape
+        elif gray_image.shape != reference_shape:
+            raise ValueError(
+                f"{sample_dir.name} 中各通道图像尺寸不一致："
+                f"期望 {reference_shape}，但 {channel_path.name} 为 {gray_image.shape}。"
+            )
+
+        arrays.append(gray_image)
+        notes.append(f"{channel_name} <- {channel_path.name}")
+        notes.extend(image_notes)
+
+    if contents.overlay_files:
+        notes.append(
+            "忽略 overlay/composite/映射忽略文件: "
+            + ", ".join(path.name for path in sorted(contents.overlay_files, key=natural_sort_key))
+        )
+
+    image = np.stack(arrays, axis=-1)
+    return ImageLoadResult(
+        image=image.astype(np.float64, copy=False),
+        source_kind="sample_folder",
+        axes="YXC",
+        photometric="",
+        raw_channel_names=list(ordered_channels),
+        notes=notes,
+    ), contents
+
+
 def score_channel_for_dapi(
     channel: np.ndarray,
     min_area: int,
@@ -1026,8 +1418,27 @@ def resolve_channel_mapping(load_result: ImageLoadResult, config: AnalysisConfig
     if config.file_channel_order:
         manual = [normalize_channel_name(x) for x in config.file_channel_order]
         if len(manual) > n_channels:
+            photometric_upper = str(load_result.photometric or "").upper()
+            axes_upper = str(load_result.axes or "").upper()
+            looks_like_rgb_overlay = (
+                n_channels == 3
+                and (
+                    "OVERLAY" in image_path.name.upper()
+                    or "RGB" in photometric_upper
+                    or "S" in axes_upper
+                )
+            )
+            overlay_hint = ""
+            if looks_like_rgb_overlay:
+                overlay_hint = (
+                    " 该文件当前读出来是 3 通道 RGB/overlay 合成图，不是 4 个独立原始通道。"
+                    " 如果样本实际做了 DAPI/488/594/647 四通道共染，请导出原始多通道 TIFF/OME-TIFF"
+                    "（或每个通道单独灰度图），不要使用 Overlay 图。"
+                    " Overlay 中 594 和 647 进入显示用颜色后，无法再可靠拆开。"
+                )
             raise ValueError(
                 f"{image_path.name} 共有 {n_channels} 个通道，但 FILE_CHANNEL_ORDER 配置了 {len(manual)} 个。"
+                f"{overlay_hint}"
             )
         assignments = {idx: name for idx, name in enumerate(manual)}
         order = build_full_channel_order(n_channels, assignments)
@@ -1149,6 +1560,25 @@ def resolve_channel_mapping(load_result: ImageLoadResult, config: AnalysisConfig
 
 
 def validate_config(config: AnalysisConfig) -> AnalysisConfig:
+    mode = str(config.input_discovery_mode or "auto").strip().lower()
+    mode_aliases = {
+        "auto": "auto",
+        "sample_folders": "sample_folders",
+        "sample_folder": "sample_folders",
+        "folders": "sample_folders",
+        "folder": "sample_folders",
+        "image_files": "image_files",
+        "image_file": "image_files",
+        "images": "image_files",
+        "files": "image_files",
+    }
+    if mode not in mode_aliases:
+        raise ValueError(
+            f"INPUT_DISCOVERY_MODE 不支持: {config.input_discovery_mode}。"
+            " 可选值: auto / sample_folders / image_files"
+        )
+    config.input_discovery_mode = mode_aliases[mode]
+
     if config.file_channel_order:
         config.file_channel_order = [normalize_channel_name(x) for x in config.file_channel_order]
         if len(config.file_channel_order) != len(set(config.file_channel_order)):
@@ -1157,6 +1587,8 @@ def validate_config(config: AnalysisConfig) -> AnalysisConfig:
             if not ALLOWED_CHANNEL_NAME_PATTERN.match(name):
                 raise ValueError(f"不支持的通道名称格式: {name}")
 
+    config.filename_role_map = normalize_filename_role_map(config.filename_role_map)
+    config.filename_channel_map = normalize_filename_channel_map(config.filename_channel_map)
     config.fallback_channel_order = [normalize_channel_name(x) for x in config.fallback_channel_order]
     config.positive_threshold_rules = _normalize_positive_threshold_rules(config.positive_threshold_rules)
     config.bleedthrough_rules = _normalize_bleedthrough_rules(config.bleedthrough_rules)
@@ -1351,6 +1783,49 @@ def _normalize_bleedthrough_rules(rules: Dict[str, Dict[str, Any]]) -> Dict[str,
         rule_copy["estimate_mask"] = str(rule_copy.get("estimate_mask", "nuclei")).strip().lower()
         normalized[target] = rule_copy
     return normalized
+
+
+def build_bleedthrough_rules_from_simple_config(
+    source_map: Dict[str, str],
+    default_rule: Optional[Dict[str, Any]] = None,
+    manual_coefficients: Optional[Dict[str, float]] = None,
+    rule_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    rules: Dict[str, Dict[str, Any]] = {}
+    default_rule = dict(default_rule or {})
+    manual_coefficients = manual_coefficients or {}
+
+    for target_name, source_name in (source_map or {}).items():
+        target = normalize_channel_name(target_name)
+        source = normalize_channel_name(source_name)
+        rule = dict(default_rule)
+        rule["source"] = source
+
+        manual_key = next(
+            (key for key in manual_coefficients if normalize_channel_name(key) == target),
+            None,
+        )
+        if manual_key is not None:
+            rule["mode"] = "manual"
+            rule["coefficient"] = float(max(0.0, manual_coefficients[manual_key]))
+
+        rules[target] = rule
+
+    for target_name, raw_override in (rule_overrides or {}).items():
+        if raw_override is None:
+            continue
+        target = normalize_channel_name(target_name)
+        override = dict(raw_override)
+        rule = dict(rules.get(target, {}))
+        rule.update(override)
+        if "source" not in rule or rule.get("source") in {None, ""}:
+            raise ValueError(
+                f"BLEEDTHROUGH_RULE_OVERRIDES[{target_name}] 缺少 source。"
+                " 如果该通道不在 BLEEDTHROUGH_SOURCE_MAP 中，请在 override 里显式写 source。"
+            )
+        rules[target] = rule
+
+    return rules
 
 
 def resolve_positive_threshold(
@@ -1889,14 +2364,16 @@ def build_bleedthrough_diagnostic_figure(
     return out_path
 
 
-def analyze_single_image(
+def analyze_loaded_image(
     image_path: Path,
     group_name: str,
     config: AnalysisConfig,
     qc_dir: Path,
     diagnostics_dir: Path,
+    merged_dir: Path,
+    load_result: ImageLoadResult,
+    extra_result_fields: Optional[Dict[str, Any]] = None,
 ) -> ImageAnalysisResult:
-    load_result = load_multichannel_image(image_path)
     image = load_result.image
     resolution = resolve_channel_mapping(load_result, config, image_path=image_path)
 
@@ -1999,6 +2476,8 @@ def analyze_single_image(
         "tiff_axes": load_result.axes,
         "tiff_photometric": load_result.photometric,
     }
+    if extra_result_fields:
+        result.update(extra_result_fields)
 
     for canonical_name in CANONICAL_CHANNELS:
         result[f"channel_index_{canonical_name}"] = resolution.channel_to_index.get(canonical_name, np.nan)
@@ -2043,6 +2522,14 @@ def analyze_single_image(
                 threshold_b=positive_thresholds[channel_b],
             )
         )
+
+    merged_path = build_denoised_merged_image(
+        image_path=image_path,
+        group_name=group_name,
+        channel_images=signals,
+        merged_dir=merged_dir,
+    )
+    result["merged_denoised_path"] = str(merged_path) if merged_path is not None else ""
 
     qc_path = build_qc_figure(
         image_path=image_path,
@@ -2094,6 +2581,64 @@ def analyze_single_image(
     result["bleedthrough_diagnostic_paths"] = " | ".join(bleedthrough_paths)
 
     return ImageAnalysisResult(values=result, roi_mask=roi_mask, nuclei_labels=nuclei_labels)
+
+
+def analyze_single_image(
+    image_path: Path,
+    group_name: str,
+    config: AnalysisConfig,
+    qc_dir: Path,
+    diagnostics_dir: Path,
+    merged_dir: Path,
+) -> ImageAnalysisResult:
+    load_result = load_multichannel_image(image_path)
+    return analyze_loaded_image(
+        image_path=image_path,
+        group_name=group_name,
+        config=config,
+        qc_dir=qc_dir,
+        diagnostics_dir=diagnostics_dir,
+        merged_dir=merged_dir,
+        load_result=load_result,
+        extra_result_fields={
+            "input_mode": "image_file",
+            "component_channel_files": str(image_path),
+            "ignored_overlay_files": "",
+        },
+    )
+
+
+def analyze_sample_folder(
+    sample_dir: Path,
+    group_name: str,
+    config: AnalysisConfig,
+    qc_dir: Path,
+    diagnostics_dir: Path,
+    merged_dir: Path,
+    sample_contents: Optional[SampleFolderContents] = None,
+) -> ImageAnalysisResult:
+    load_result, inspected_contents = load_sample_folder_multichannel(sample_dir, config)
+    contents = sample_contents or inspected_contents
+    component_text = " | ".join(
+        f"{channel}:{path.name}"
+        for channel, path in sorted(contents.channel_files.items(), key=lambda item: natural_sort_key(item[0]))
+    )
+    ignored_overlay_text = " | ".join(path.name for path in sorted(contents.overlay_files, key=natural_sort_key))
+    return analyze_loaded_image(
+        image_path=sample_dir,
+        group_name=group_name,
+        config=config,
+        qc_dir=qc_dir,
+        diagnostics_dir=diagnostics_dir,
+        merged_dir=merged_dir,
+        load_result=load_result,
+        extra_result_fields={
+            "input_mode": "sample_folder",
+            "component_channel_files": component_text,
+            "ignored_overlay_files": ignored_overlay_text,
+            "sample_dir": str(sample_dir),
+        },
+    )
 
 
 # ============================================================================
@@ -2382,8 +2927,8 @@ def create_summary_figure(
 def write_text_report(
     report_path: Path,
     config: AnalysisConfig,
-    group1_images: List[Path],
-    group2_images: List[Path],
+    group1_inputs: List[AnalysisInput],
+    group2_inputs: List[AnalysisInput],
     per_image_df: pd.DataFrame,
     stats_df: pd.DataFrame,
     errors_df: pd.DataFrame,
@@ -2394,8 +2939,9 @@ def write_text_report(
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Group 1: {config.group1_name} | folder={config.group1_dir}")
     lines.append(f"Group 2: {config.group2_name} | folder={config.group2_dir}")
-    lines.append(f"Images found: {config.group1_name}={len(group1_images)}, {config.group2_name}={len(group2_images)}")
+    lines.append(f"Inputs found: {config.group1_name}={len(group1_inputs)}, {config.group2_name}={len(group2_inputs)}")
     lines.append(f"Successful analyses: {config.group1_name}={(per_image_df['group'] == config.group1_name).sum()}, {config.group2_name}={(per_image_df['group'] == config.group2_name).sum()}")
+    lines.append(f"Input discovery mode: {config.input_discovery_mode}")
     lines.append(f"Manual FILE_CHANNEL_ORDER: {config.file_channel_order if config.file_channel_order else 'AUTO'}")
     lines.append(f"AUTO_DETECT_CHANNELS: {config.auto_detect_channels}")
     lines.append(f"STRICT_CHANNEL_DETECTION: {config.strict_channel_detection}")
@@ -2408,6 +2954,8 @@ def write_text_report(
     lines.append(f"Intensity channels: {config.intensity_channels}")
     lines.append(f"Auto colocalization pairs: {config.auto_colocalization_pairs}")
     lines.append(f"Colocalization pairs: {config.colocalization_pairs}")
+    lines.append(f"Filename role map: {json.dumps(config.filename_role_map, ensure_ascii=False)}")
+    lines.append(f"Filename channel map: {json.dumps(config.filename_channel_map, ensure_ascii=False)}")
     lines.append("")
     lines.append("Statistics policy")
     lines.append("- Normality test: Shapiro-Wilk when n >= 3 and data are non-constant")
@@ -2419,10 +2967,10 @@ def write_text_report(
     if not per_image_df.empty and "resolved_channel_order" in per_image_df.columns:
         lines.append("Per-image channel mapping")
         lines.append("-" * 72)
-        for _, row in per_image_df[["group", "image_file", "image_output_id", "channel_detection_method", "resolved_channel_order"]].iterrows():
+        for _, row in per_image_df[["group", "image_file", "image_output_id", "input_mode", "channel_detection_method", "resolved_channel_order"]].iterrows():
             lines.append(
                 f"[{row['group']}] {row['image_file']} ({row['image_output_id']}): "
-                f"method={row['channel_detection_method']} | {row['resolved_channel_order']}"
+                f"mode={row['input_mode']} | method={row['channel_detection_method']} | {row['resolved_channel_order']}"
             )
         lines.append("")
 
@@ -2466,24 +3014,27 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
     make_output_dir(run_dir)
     qc_dir = run_dir / "qc_overlays"
     diagnostics_dir = run_dir / "channel_diagnostics"
+    merged_dir = run_dir / "merged_denoised"
     if config.save_qc_overlays:
         make_output_dir(qc_dir)
     if config.save_channel_diagnostics:
         make_output_dir(diagnostics_dir)
+    make_output_dir(merged_dir)
 
-    group1_images = discover_images(config.group1_dir, config.image_patterns, recursive=config.recursive_scan)
-    group2_images = discover_images(config.group2_dir, config.image_patterns, recursive=config.recursive_scan)
+    group1_inputs = discover_analysis_inputs(config.group1_dir, config)
+    group2_inputs = discover_analysis_inputs(config.group2_dir, config)
 
-    if len(group1_images) == 0:
-        raise RuntimeError(f"组 {config.group1_name} 文件夹中未找到图像: {config.group1_dir}")
-    if len(group2_images) == 0:
-        raise RuntimeError(f"组 {config.group2_name} 文件夹中未找到图像: {config.group2_dir}")
+    if len(group1_inputs) == 0:
+        raise RuntimeError(f"组 {config.group1_name} 文件夹中未找到可分析输入: {config.group1_dir}")
+    if len(group2_inputs) == 0:
+        raise RuntimeError(f"组 {config.group2_name} 文件夹中未找到可分析输入: {config.group2_dir}")
 
     print("=" * 88)
     print("Easy IF batch analysis (fixed)")
     print("=" * 88)
-    print(f"Group 1: {config.group1_name} | images={len(group1_images)} | folder={config.group1_dir}")
-    print(f"Group 2: {config.group2_name} | images={len(group2_images)} | folder={config.group2_dir}")
+    print(f"Group 1: {config.group1_name} | inputs={len(group1_inputs)} | folder={config.group1_dir}")
+    print(f"Group 2: {config.group2_name} | inputs={len(group2_inputs)} | folder={config.group2_dir}")
+    print(f"Input discovery mode   : {config.input_discovery_mode}")
     print(f"Manual FILE_CHANNEL_ORDER: {config.file_channel_order if config.file_channel_order else 'AUTO'}")
     print(f"Auto detect channels   : {config.auto_detect_channels}")
     print(f"Strict detection       : {config.strict_channel_detection}")
@@ -2491,26 +3042,42 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
     print(f"Intensity channels     : {config.intensity_channels}")
     print(f"Auto coloc pairs       : {config.auto_colocalization_pairs}")
     print(f"Colocalization pairs   : {config.colocalization_pairs}")
+    print(f"Filename role map      : {json.dumps(config.filename_role_map, ensure_ascii=False)}")
+    print(f"Filename channel map   : {json.dumps(config.filename_channel_map, ensure_ascii=False)}")
     print(f"Output                 : {run_dir}")
 
     all_rows: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
 
-    for group_name, image_list in ((config.group1_name, group1_images), (config.group2_name, group2_images)):
+    for group_name, input_list in ((config.group1_name, group1_inputs), (config.group2_name, group2_inputs)):
         print("-" * 88)
         print(f"Analyzing group: {group_name}")
-        for index, image_path in enumerate(image_list, start=1):
+        for index, analysis_input in enumerate(input_list, start=1):
+            input_path = analysis_input.path
             try:
-                result = analyze_single_image(
-                    image_path=image_path,
-                    group_name=group_name,
-                    config=config,
-                    qc_dir=qc_dir,
-                    diagnostics_dir=diagnostics_dir,
-                )
+                if analysis_input.source_mode == "sample_folder":
+                    result = analyze_sample_folder(
+                        sample_dir=input_path,
+                        group_name=group_name,
+                        config=config,
+                        qc_dir=qc_dir,
+                        diagnostics_dir=diagnostics_dir,
+                        merged_dir=merged_dir,
+                        sample_contents=analysis_input.sample_contents,
+                    )
+                else:
+                    result = analyze_single_image(
+                        image_path=input_path,
+                        group_name=group_name,
+                        config=config,
+                        qc_dir=qc_dir,
+                        diagnostics_dir=diagnostics_dir,
+                        merged_dir=merged_dir,
+                    )
                 all_rows.append(result.values)
                 print(
-                    f"[{group_name}] {index:>3d}/{len(image_list):<3d} {image_path.name} | "
+                    f"[{group_name}] {index:>3d}/{len(input_list):<3d} {input_path.name} | "
+                    f"mode={result.values.get('input_mode', 'NA')} | "
                     f"cells={result.values['cell_count']} | "
                     f"roi_area={result.values['roi_area_fraction']:.3f} | "
                     f"mapping={result.values['resolved_channel_order']}"
@@ -2518,10 +3085,10 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
             except Exception as exc:
                 errors.append({
                     "group": group_name,
-                    "image_path": str(image_path),
+                    "image_path": str(input_path),
                     "error": str(exc),
                 })
-                print(f"[ERROR] [{group_name}] {image_path.name}: {exc}")
+                print(f"[ERROR] [{group_name}] {input_path.name}: {exc}")
 
     per_image_df = pd.DataFrame(all_rows)
     errors_df = pd.DataFrame(errors)
@@ -2557,7 +3124,7 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
     per_image_df.to_csv(per_image_csv, index=False)
     stats_df.to_csv(stats_csv, index=False)
     errors_df.to_csv(error_csv, index=False)
-    write_text_report(report_txt, config, group1_images, group2_images, per_image_df, stats_df, errors_df)
+    write_text_report(report_txt, config, group1_inputs, group2_inputs, per_image_df, stats_df, errors_df)
     config_json.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     figure_paths = create_summary_figure(per_image_df, stats_df, config, summary_base)
 
@@ -2570,6 +3137,7 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
     if figure_paths:
         for key, value in figure_paths.items():
             print(f"Summary figure ({key}): {value}")
+    print(f"Merged denoised   : {merged_dir}")
     if config.save_qc_overlays:
         print(f"QC overlays      : {qc_dir}")
     if config.save_channel_diagnostics:
@@ -2616,7 +3184,38 @@ def parse_optional_channel_order(raw: Optional[Sequence[str]]) -> Optional[List[
     return values
 
 
+def parse_filename_channel_map(raw_items: Sequence[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for item in raw_items:
+        parts = re.split(r"[:=]", str(item), maxsplit=1)
+        parts = [x.strip() for x in parts if x.strip()]
+        if len(parts) != 2:
+            raise ValueError(f"文件名通道映射格式错误: {item}，请使用 CH1:DAPI 这样的格式。")
+        out[parts[0]] = parts[1]
+    return out
+
+
+def parse_filename_role_map(raw_items: Sequence[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for item in raw_items:
+        parts = re.split(r"[:=]", str(item), maxsplit=1)
+        parts = [x.strip() for x in parts if x.strip()]
+        if len(parts) != 2:
+            raise ValueError(f"文件名角色映射格式错误: {item}，请使用 CH0:overlay 这样的格式。")
+        out[parts[0]] = parts[1]
+    return out
+
+
 def build_default_config() -> AnalysisConfig:
+    file_channel_order = globals().get("FILE_CHANNEL_ORDER", None)
+    if file_channel_order is not None:
+        file_channel_order = list(file_channel_order)
+    bleedthrough_rules = build_bleedthrough_rules_from_simple_config(
+        source_map=json.loads(json.dumps(BLEEDTHROUGH_SOURCE_MAP)),
+        default_rule=json.loads(json.dumps(BLEEDTHROUGH_DEFAULT_RULE)),
+        manual_coefficients=json.loads(json.dumps(BLEEDTHROUGH_MANUAL_COEFFICIENTS)),
+        rule_overrides=json.loads(json.dumps(BLEEDTHROUGH_RULE_OVERRIDES)),
+    )
     return AnalysisConfig(
         group1_dir=Path(GROUP1_DIR),
         group2_dir=Path(GROUP2_DIR),
@@ -2624,7 +3223,8 @@ def build_default_config() -> AnalysisConfig:
         group2_name=GROUP2_NAME,
         output_dir=Path(OUTPUT_DIR),
 
-        file_channel_order=list(FILE_CHANNEL_ORDER) if FILE_CHANNEL_ORDER else None,
+        input_discovery_mode=str(INPUT_DISCOVERY_MODE),
+        file_channel_order=file_channel_order,
         auto_detect_channels=bool(AUTO_DETECT_CHANNELS),
         strict_channel_detection=bool(STRICT_CHANNEL_DETECTION),
         save_channel_diagnostics=bool(SAVE_CHANNEL_DIAGNOSTICS),
@@ -2633,12 +3233,14 @@ def build_default_config() -> AnalysisConfig:
 
         enable_bleedthrough_correction=bool(ENABLE_BLEEDTHROUGH_CORRECTION),
         save_bleedthrough_diagnostics=bool(SAVE_BLEEDTHROUGH_DIAGNOSTICS),
-        bleedthrough_rules=json.loads(json.dumps(BLEEDTHROUGH_RULES)),
+        bleedthrough_rules=bleedthrough_rules,
 
         dapi_channel=DAPI_CHANNEL,
         intensity_channels=list(INTENSITY_CHANNELS),
         auto_colocalization_pairs=bool(AUTO_COLOCALIZATION_PAIRS),
         colocalization_pairs=list(COLOCALIZATION_PAIRS),
+        filename_role_map=json.loads(json.dumps(FILENAME_ROLE_MAP)),
+        filename_channel_map=json.loads(json.dumps(FILENAME_CHANNEL_MAP)),
 
         image_patterns=list(IMAGE_PATTERNS),
         recursive_scan=RECURSIVE_SCAN,
@@ -2656,13 +3258,14 @@ def build_default_config() -> AnalysisConfig:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Easy batch immunofluorescence analysis (fixed + DAPI bleed-through correction). 也可直接修改脚本顶部配置区后运行。"
+        description="Easy batch immunofluorescence analysis (fixed + configurable bleed-through correction). 也可直接修改脚本顶部配置区后运行。"
     )
     parser.add_argument("--group1-dir", type=str, help="组1图片文件夹")
     parser.add_argument("--group2-dir", type=str, help="组2图片文件夹")
     parser.add_argument("--group1-name", type=str, help="组1名称")
     parser.add_argument("--group2-name", type=str, help="组2名称")
     parser.add_argument("--output-dir", type=str, help="输出文件夹")
+    parser.add_argument("--input-discovery-mode", type=str, help="输入模式：auto / sample_folders / image_files")
 
     parser.add_argument("--file-channel-order", nargs="+", help="手动指定文件通道顺序；填 AUTO 表示自动检测")
     parser.add_argument("--fallback-channel-order", nargs="+", help="关闭 strict 时的兜底顺序")
@@ -2676,6 +3279,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dapi-channel", type=str, help="DAPI 通道名")
     parser.add_argument("--intensity-channels", nargs="+", help="做强度分析的通道")
     parser.add_argument("--coloc-pairs", nargs="+", help="共定位通道对，如 488:594 594:647")
+    parser.add_argument("--filename-role-map", nargs="+", help="文件名关键字与文件角色映射，如 CH0:overlay Merge:ignore")
+    parser.add_argument("--filename-channel-map", nargs="+", help="文件名关键字与通道名映射，如 CH1:DAPI CH2:488")
     parser.add_argument("--all-coloc-pairs", action="store_true", help="自动对所有 intensity channels 生成两两共定位/相关性统计")
     parser.add_argument("--no-auto-coloc-pairs", action="store_true", help="关闭自动两两配对，仅使用 --coloc-pairs 或顶部配置中的手动列表")
     parser.add_argument("--recursive-scan", action="store_true", help="递归扫描子文件夹")
@@ -2699,6 +3304,8 @@ def apply_cli_overrides(config: AnalysisConfig, args: argparse.Namespace) -> Ana
         config.group2_name = args.group2_name
     if args.output_dir:
         config.output_dir = Path(args.output_dir)
+    if args.input_discovery_mode:
+        config.input_discovery_mode = str(args.input_discovery_mode)
 
     cli_order = parse_optional_channel_order(args.file_channel_order)
     if args.file_channel_order is not None:
@@ -2712,6 +3319,10 @@ def apply_cli_overrides(config: AnalysisConfig, args: argparse.Namespace) -> Ana
         config.strict_channel_detection = False
     if args.no_channel_diagnostics:
         config.save_channel_diagnostics = False
+    if args.dapi_channel:
+        config.dapi_channel = args.dapi_channel
+    if args.intensity_channels:
+        config.intensity_channels = list(args.intensity_channels)
     if args.no_bleedthrough_correction:
         config.enable_bleedthrough_correction = False
     if args.no_bleedthrough_diagnostics:
@@ -2721,11 +3332,10 @@ def apply_cli_overrides(config: AnalysisConfig, args: argparse.Namespace) -> Ana
         config.bleedthrough_rules["488"]["source"] = config.dapi_channel
         config.bleedthrough_rules["488"]["mode"] = "manual"
         config.bleedthrough_rules["488"]["coefficient"] = float(args.bleedthrough_488_manual)
-
-    if args.dapi_channel:
-        config.dapi_channel = args.dapi_channel
-    if args.intensity_channels:
-        config.intensity_channels = list(args.intensity_channels)
+    if args.filename_role_map:
+        config.filename_role_map = parse_filename_role_map(args.filename_role_map)
+    if args.filename_channel_map:
+        config.filename_channel_map = parse_filename_channel_map(args.filename_channel_map)
     if args.all_coloc_pairs:
         config.auto_colocalization_pairs = True
         config.colocalization_pairs = []
