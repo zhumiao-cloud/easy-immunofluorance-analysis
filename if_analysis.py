@@ -166,9 +166,7 @@ SAVE_CHANNEL_DIAGNOSTICS = True  # 保存每个 raw index 的诊断图
 # 修改594阈值，建议采用 Otsu 自动阈值乘以 1.8 倍缩放（scale）并设定 30 为下限，使 594 信号避免将弱噪声误判为阳性，
 # 若噪声仍偏多可上调 scale 至 2.0–2.2，若真信号被过度压制则下调至 1.4–1.6，亦可直接通过 {"method": "manual", "value": 80} 完全手动指定阈值。
 POSITIVE_THRESHOLD_RULES = {
-    "594": {"method": "otsu", "scale": 2, "min_value": 30.0},
-    "488": {"method": "otsu", "scale": 2, "min_value": 30.0},
-    "647": {"method": "otsu", "scale": 2, "min_value": 30.0}      
+    "594": {"method": "otsu", "scale": 1.6, "min_value": 30.0}  
 }
 
 
