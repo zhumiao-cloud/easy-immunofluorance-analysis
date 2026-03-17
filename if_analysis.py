@@ -84,31 +84,46 @@ ANALYSIS_CHANNELS = ["488", "594", "647"]  # 进入强度和共定位分析的�
 AUTO_ALL_PAIRWISE_STATS = True  # True 时自动做 ANALYSIS_CHANNELS 的两两配对
 MANUAL_COLOCALIZATION_PAIRS: List[Tuple[str, str]] = []  # 仅在 AUTO_ALL_PAIRWISE_STATS=False 时使用
 
-# Quantification
-BACKGROUND_PERCENTILE = 3.0  # 背景估计分位数的全局默认值
-BACKGROUND_PERCENTILE_RULES: Dict[str, float] = {  # 按通道覆盖背景分位数；DAPI 可单独设低一点
-    "DAPI": 1.0,
-    "488": 3.0,
-    "594": 3.0,
-    "647": 3.0,
+# Channel-level settings
+CHANNEL_SETTINGS: Dict[str, Dict[str, Any]] = {
+    "DAPI": {
+        "background_percentile": 0.0,  # 0 表示不做测量阶段背景扣除
+        "positive_min_area": 0,  # DAPI positive preview 碎点过滤面积；0 表示关闭
+        "positive_threshold": {"method": "manual", "value": 0.0},  # 如果想让 DAPI positive preview 尽量接近原图，建议与 NUCLEUS_SEGMENTATION_SETTINGS["threshold"] 保持一致
+        "color": (0, 0, 255),  # raw / positive preview / merged 共用伪彩
+    },
+    "488": {
+        "background_percentile": 3.0,  # 该通道背景扣除分位数
+        "positive_min_area": 100,  # 阈值后最小阳性面积
+        "positive_threshold": {"method": "otsu", "scale": 1.1, "min_value": 30.0},  # 阳性阈值规则
+        "color": (0, 255, 0),  # raw / positive preview / merged 共用伪彩
+    },
+    "594": {
+        "background_percentile": 3.0,
+        "positive_min_area": 200,
+        "positive_threshold": {"method": "otsu", "scale": 1.7, "min_value": 30.0},
+        "color": (255, 0, 0),
+    },
+    "647": {
+        "background_percentile": 3.0,
+        "positive_min_area": 100,
+        "positive_threshold": {"method": "otsu", "scale": 1.3, "min_value": 30.0},
+        "color": (255, 0, 178),
+    },
 }
-MIN_NUCLEUS_AREA = 0.5  # 仅用于 DAPI 核分割；运行时会转成 >=1 的整数
-MIN_POSITIVE_OBJECT_AREA = 0  # 阳性阈值后碎点过滤的全局默认面积；0 表示关闭
-POSITIVE_OBJECT_AREA_RULES: Dict[str, int] = {  # 按通道覆盖碎点过滤面积；DAPI 可与 marker 分开设置
-    "DAPI": 0,
-    "488": 100,
-    "594": 200,
-    "647": 100,
-}
-GAUSSIAN_BLUR_SIZE = 7  # DAPI 分割前的高斯平滑核大小
-MIN_PEAK_DISTANCE = 1  # watershed 种子点最小距离
-MASK_DILATION_RADIUS = 0  # ROI 相对 nuclei 向外扩张的像素半径
 
-POSITIVE_THRESHOLD_RULES = {  # 各通道阳性阈值规则；若包含 DAPI，也会影响 DAPI 的 split/merged positive preview
-    "DAPI": {"method": "otsu", "scale": 1.0, "min_value": 0.0},
-    "594": {"method": "otsu", "scale": 1.7, "min_value": 30.0},
-    "488": {"method": "otsu", "scale": 1.1, "min_value": 30.0},
-    "647": {"method": "otsu", "scale": 1.3, "min_value": 30.0},
+NUCLEUS_SEGMENTATION_SETTINGS: Dict[str, Any] = {
+    "background_percentile": 0.0,  # DAPI 分割前背景扣除分位数；0 表示关闭
+    "gaussian_blur_size": 0,  # DAPI 分割前高斯平滑核大小；0 表示关闭
+    #"threshold": {"method": "otsu", "scale": 1.0, "min_value": 0.0},  # manual+0 可尽量保留弱核
+    "threshold": {"method": "manual", "value": 0.0},
+    "min_mask_object_area": 0,  # 二值核 mask 小物体过滤面积；0 表示关闭
+    "min_mask_hole_area": 0,  # 二值核 mask 小孔洞填充面积；0 表示关闭
+    "opening_radius": 0,  # opening 半径；0 表示关闭
+    "closing_radius": 0,  # closing 半径；0 表示关闭
+    "min_peak_distance": 0,  # watershed 种子最小距离；0 表示不额外 split
+    "min_nucleus_area": 0,  # 最终核面积过滤；0 表示关闭
+    "mask_dilation_radius": 0,  # ROI 相对 nuclei 向外扩张的像素半径；0 表示关闭
 }
 
 # Bleed-through correction
@@ -133,12 +148,6 @@ BLEEDTHROUGH_MANUAL_COEFFICIENTS: Dict[str, float] = {}  # 需要手动系数时
 BLEEDTHROUGH_RULE_OVERRIDES: Dict[str, Dict[str, Any]] = {}  # 只在少数通道要覆盖默认规则时填写
 
 # Visualization and outputs
-CHANNEL_COLORS: Dict[str, Tuple[int, int, int]] = {  # split preview 与 merged 共用这套颜色
-    "DAPI": (0, 0, 255),
-    "488": (0, 255, 0),
-    "594": (255, 0, 0),
-    "647": (255, 0, 178),
-}
 RAW_CHANNEL_DISPLAY_MODE = "color"           # 原始单通道面板显示方式: color / gray
 POSITIVE_PREVIEW_DISPLAY_MODE = "color"      # 阳性预览显示方式: colormap / color / gray
 POSITIVE_PREVIEW_COLORMAP = "inferno"        # 仅在 POSITIVE_PREVIEW_DISPLAY_MODE="colormap" 时使用
@@ -154,6 +163,8 @@ INTENSITY_CHANNELS = list(ANALYSIS_CHANNELS)
 AUTO_COLOCALIZATION_PAIRS = bool(AUTO_ALL_PAIRWISE_STATS)
 COLOCALIZATION_PAIRS = list(MANUAL_COLOCALIZATION_PAIRS)
 FALLBACK_CHANNEL_ORDER = [DAPI_CHANNEL] + [x for x in INTENSITY_CHANNELS if x != DAPI_CHANNEL]
+DEFAULT_BACKGROUND_PERCENTILE = 0.0
+DEFAULT_POSITIVE_OBJECT_AREA = 0
 
 
 # ============================================================================
@@ -203,6 +214,8 @@ class AnalysisConfig:
     colocalization_pairs: List[Tuple[str, str]]
     filename_role_map: Dict[str, str]
     filename_channel_map: Dict[str, str]
+    channel_settings: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    nucleus_segmentation_settings: Dict[str, Any] = field(default_factory=dict)
 
     image_patterns: List[str] = field(default_factory=lambda: ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"])
     recursive_scan: bool = False
@@ -360,6 +373,13 @@ def canonicalize_channel_label(name: str) -> Optional[str]:
 
 def ensure_odd(value: int) -> int:
     value = int(max(1, value))
+    return value if value % 2 == 1 else value + 1
+
+
+def ensure_odd_or_zero(value: Any) -> int:
+    value = int(max(0, value))
+    if value <= 0:
+        return 0
     return value if value % 2 == 1 else value + 1
 
 
@@ -1345,75 +1365,20 @@ def load_sample_folder_multichannel(sample_dir: Path, config: AnalysisConfig) ->
 
 def score_channel_for_dapi(
     channel: np.ndarray,
-    min_area: int,
-    gaussian_blur_size: int,
-    min_peak_distance: int,
+    nucleus_segmentation_settings: Dict[str, Any],
 ) -> Dict[str, float]:
-    channel = np.asarray(channel, dtype=np.float64)
-    channel = np.nan_to_num(channel, nan=0.0, posinf=0.0, neginf=0.0)
-
-    bgsub = np.clip(channel - np.percentile(channel, 5), 0, None)
-    u8 = array_to_uint8(bgsub)
-    if np.max(u8) <= 0:
-        return {
-            "score": 0.0,
-            "cell_count": 0.0,
-            "mask_fraction": 1.0,
-            "mean_area": 0.0,
-        }
-
-    if gaussian_blur_size > 1:
-        smooth = cv2.GaussianBlur(u8, (gaussian_blur_size, gaussian_blur_size), 0)
-    else:
-        smooth = u8
-
-    threshold = robust_otsu_threshold(smooth.ravel())
-    mask = smooth > threshold
-    cleanup_threshold = max(8, min_area // 6)
-    mask = remove_small_objects_compat(mask, cleanup_threshold)
-    mask = remove_small_holes_compat(mask, cleanup_threshold)
-    mask = morphology.opening(mask, morphology.disk(1))
-    mask = morphology.closing(mask, morphology.disk(1))
-
-    if not np.any(mask):
-        return {
-            "score": 0.0,
-            "cell_count": 0.0,
-            "mask_fraction": 1.0,
-            "mean_area": 0.0,
-        }
-
-    distance = ndi.distance_transform_edt(mask)
-    coordinates = feature.peak_local_max(
-        distance,
-        labels=mask,
-        min_distance=max(1, min_peak_distance // 2),
-        exclude_border=False,
+    settings = _normalize_nucleus_segmentation_settings(nucleus_segmentation_settings)
+    labels, mask, cell_count, mean_area = segment_nuclei(
+        dapi=channel,
+        nucleus_segmentation_settings=settings,
     )
-    markers = np.zeros(mask.shape, dtype=np.int32)
-    if coordinates.size > 0:
-        for idx, (row, col) in enumerate(coordinates, start=1):
-            markers[row, col] = idx
-        markers = ndi.label(markers > 0)[0]
-    else:
-        markers = ndi.label(mask)[0]
-
-    labels = segmentation.watershed(-distance, markers, mask=mask)
-
-    relaxed_min_area = max(20, min_area // 4)
-    areas = [
-        float(region.area)
-        for region in measure.regionprops(labels)
-        if region.area >= relaxed_min_area
-    ]
-    cell_count = len(areas)
-    mean_area = float(np.mean(areas)) if areas else 0.0
-    mask_fraction = float(np.mean(mask))
+    mask_fraction = float(np.mean(mask)) if mask.size > 0 else 0.0
 
     if cell_count <= 0:
         score = 0.0
     else:
-        target = max(float(relaxed_min_area), 1.0)
+        configured_min_area = float(max(0, settings.get("min_nucleus_area", 0)))
+        target = max(configured_min_area, 1.0) if configured_min_area > 0 else max(mean_area, 1.0)
         area_ratio = mean_area / target if mean_area > 0 else 0.0
         area_penalty = math.exp(-abs(math.log(max(area_ratio, 1e-6))))
         score = float(cell_count * area_penalty / (1.0 + 8.0 * mask_fraction))
@@ -1431,9 +1396,7 @@ def detect_dapi_index(image: np.ndarray, config: AnalysisConfig) -> Tuple[int, L
     for idx in range(image.shape[-1]):
         metrics = score_channel_for_dapi(
             image[..., idx],
-            min_area=config.min_nucleus_area,
-            gaussian_blur_size=config.gaussian_blur_size,
-            min_peak_distance=config.min_peak_distance,
+            nucleus_segmentation_settings=config.nucleus_segmentation_settings,
         )
         metrics["index"] = float(idx)
         details.append(metrics)
@@ -1650,35 +1613,39 @@ def validate_config(config: AnalysisConfig) -> AnalysisConfig:
     config.filename_role_map = normalize_filename_role_map(config.filename_role_map)
     config.filename_channel_map = normalize_filename_channel_map(config.filename_channel_map)
     config.fallback_channel_order = [normalize_channel_name(x) for x in config.fallback_channel_order]
+    config.dapi_channel = normalize_channel_name(config.dapi_channel)
+    config.intensity_channels = [normalize_channel_name(x) for x in config.intensity_channels]
+    config.colocalization_pairs = normalize_colocalization_pairs(config.colocalization_pairs)
+    config.background_percentile = float(np.clip(config.background_percentile, 0.0, 100.0))
+    config.min_positive_object_area = int(max(0, config.min_positive_object_area))
     config.positive_threshold_rules = _normalize_positive_threshold_rules(config.positive_threshold_rules)
     config.background_percentile_rules = _normalize_background_percentile_rules(config.background_percentile_rules)
     config.positive_object_area_rules = _normalize_positive_object_area_rules(config.positive_object_area_rules)
     config.bleedthrough_rules = _normalize_bleedthrough_rules(config.bleedthrough_rules)
-    config.dapi_channel = normalize_channel_name(config.dapi_channel)
-    config.intensity_channels = [normalize_channel_name(x) for x in config.intensity_channels]
-    config.colocalization_pairs = normalize_colocalization_pairs(config.colocalization_pairs)
     config.channel_colors = _normalize_channel_colors(config.channel_colors)
+    config.channel_settings = _normalize_channel_settings(config.channel_settings)
+    config.nucleus_segmentation_settings = _normalize_nucleus_segmentation_settings(config.nucleus_segmentation_settings)
     config.raw_channel_display_mode = normalize_raw_channel_display_mode(config.raw_channel_display_mode)
     config.positive_preview_display_mode = normalize_positive_preview_display_mode(config.positive_preview_display_mode)
 
     if config.auto_colocalization_pairs:
         config.colocalization_pairs = build_all_channel_pairs(config.intensity_channels)
 
+    config.channel_settings = merge_channel_settings_from_config(config)
+    (
+        config.background_percentile_rules,
+        config.positive_object_area_rules,
+        config.positive_threshold_rules,
+        config.channel_colors,
+    ) = build_channel_setting_maps(config.channel_settings)
+    config.nucleus_segmentation_settings = merge_nucleus_segmentation_settings(config)
+
     for channel_name, rule in config.positive_threshold_rules.items():
-        method = str(rule.get("method", "otsu")).strip().lower()
-        if method not in {"otsu", "manual", "percentile"}:
-            raise ValueError(f"不支持的 positive threshold method: {channel_name} -> {method}")
-        rule["method"] = method
-        if "scale" in rule:
-            rule["scale"] = float(max(0.0, rule["scale"]))
-        if "offset" in rule:
-            rule["offset"] = float(rule["offset"])
-        if "min_value" in rule:
-            rule["min_value"] = float(max(0.0, rule["min_value"]))
-        if method == "manual":
-            rule["value"] = float(max(0.0, rule.get("value", 0.0)))
-        if method == "percentile":
-            rule["percentile"] = float(np.clip(rule.get("percentile", 99.0), 0.0, 100.0))
+        validate_threshold_rule(rule, item_name=f"positive threshold rule for {channel_name}")
+    validate_threshold_rule(
+        config.nucleus_segmentation_settings["threshold"],
+        item_name="NUCLEUS_SEGMENTATION_SETTINGS['threshold']",
+    )
 
     for target_name, rule in config.bleedthrough_rules.items():
         source_name = normalize_channel_name(rule.get("source", "")) if rule.get("source", "") else ""
@@ -1708,12 +1675,12 @@ def validate_config(config: AnalysisConfig) -> AnalysisConfig:
     if config.dapi_channel not in requested:
         raise ValueError("DAPI_CHANNEL 不在请求通道列表中。")
 
-    config.gaussian_blur_size = ensure_odd(config.gaussian_blur_size)
-    config.min_nucleus_area = int(max(1, config.min_nucleus_area))
-    config.min_positive_object_area = int(max(0, config.min_positive_object_area))
-    config.min_peak_distance = int(max(1, config.min_peak_distance))
-    config.mask_dilation_radius = int(max(0, config.mask_dilation_radius))
     config.background_percentile = float(np.clip(config.background_percentile, 0.0, 100.0))
+    config.min_positive_object_area = int(max(0, config.min_positive_object_area))
+    config.gaussian_blur_size = int(config.nucleus_segmentation_settings["gaussian_blur_size"])
+    config.min_nucleus_area = int(config.nucleus_segmentation_settings["min_nucleus_area"])
+    config.min_peak_distance = int(config.nucleus_segmentation_settings["min_peak_distance"])
+    config.mask_dilation_radius = int(config.nucleus_segmentation_settings["mask_dilation_radius"])
     try:
         matplotlib.colormaps.get_cmap(config.positive_preview_colormap)
     except Exception as exc:
@@ -1732,35 +1699,52 @@ def validate_config(config: AnalysisConfig) -> AnalysisConfig:
 
 def segment_nuclei(
     dapi: np.ndarray,
-    min_area: int,
-    gaussian_blur_size: int,
-    min_peak_distance: int,
+    nucleus_segmentation_settings: Dict[str, Any],
 ) -> Tuple[np.ndarray, np.ndarray, int, float]:
+    settings = _normalize_nucleus_segmentation_settings(nucleus_segmentation_settings)
+    min_area = int(max(0, settings.get("min_nucleus_area", 0)))
+    gaussian_blur_size = int(settings.get("gaussian_blur_size", 0))
+    min_peak_distance = int(max(0, settings.get("min_peak_distance", 0)))
+    background_percentile = float(np.clip(settings.get("background_percentile", 0.0), 0.0, 100.0))
+    threshold_rule = dict(settings.get("threshold", {}))
+    min_mask_object_area = int(max(0, settings.get("min_mask_object_area", 0)))
+    min_mask_hole_area = int(max(0, settings.get("min_mask_hole_area", 0)))
+    opening_radius = int(max(0, settings.get("opening_radius", 0)))
+    closing_radius = int(max(0, settings.get("closing_radius", 0)))
+
     dapi = np.asarray(dapi, dtype=np.float64)
     dapi = np.nan_to_num(dapi, nan=0.0, posinf=0.0, neginf=0.0)
     if dapi.ndim != 2:
         raise ValueError(f"DAPI 通道必须是 2D，当前形状: {dapi.shape}")
 
-    dapi_bg = np.clip(dapi - np.percentile(dapi, 5), 0, None)
-    dapi_u8 = array_to_uint8(dapi_bg)
-
-    if gaussian_blur_size > 1:
-        dapi_smooth = cv2.GaussianBlur(dapi_u8, (gaussian_blur_size, gaussian_blur_size), 0)
+    if background_percentile > 0:
+        dapi_bg = np.clip(dapi - np.percentile(dapi, background_percentile), 0, None)
     else:
-        dapi_smooth = dapi_u8
+        dapi_bg = np.clip(dapi, 0, None)
+    if gaussian_blur_size > 1:
+        dapi_smooth = cv2.GaussianBlur(dapi_bg.astype(np.float32, copy=False), (gaussian_blur_size, gaussian_blur_size), 0)
+    else:
+        dapi_smooth = dapi_bg.astype(np.float32, copy=False)
 
-    if int(np.max(dapi_smooth)) <= 0:
+    if float(np.max(dapi_smooth)) <= 0:
         empty_labels = np.zeros(dapi.shape, dtype=np.int32)
         empty_mask = np.zeros(dapi.shape, dtype=bool)
         return empty_labels, empty_mask, 0, 0.0
 
-    threshold = robust_otsu_threshold(dapi_smooth.ravel())
+    threshold, _, _, _ = resolve_threshold_from_values(
+        dapi_smooth.ravel(),
+        rule=threshold_rule,
+        default_method="otsu",
+    )
     mask = dapi_smooth > threshold
-    cleanup_threshold = max(3, (min_area // 2) - 1)
-    mask = remove_small_objects_compat(mask, cleanup_threshold)
-    mask = remove_small_holes_compat(mask, cleanup_threshold)
-    mask = morphology.opening(mask, morphology.disk(1))
-    mask = morphology.closing(mask, morphology.disk(1))
+    if min_mask_object_area > 1:
+        mask = remove_small_objects_compat(mask, min_mask_object_area)
+    if min_mask_hole_area > 1:
+        mask = remove_small_holes_compat(mask, min_mask_hole_area)
+    if opening_radius > 0:
+        mask = morphology.opening(mask, morphology.disk(opening_radius))
+    if closing_radius > 0:
+        mask = morphology.closing(mask, morphology.disk(closing_radius))
 
     if not np.any(mask):
         empty_labels = np.zeros(dapi.shape, dtype=np.int32)
@@ -1768,18 +1752,21 @@ def segment_nuclei(
         return empty_labels, empty_mask, 0, 0.0
 
     distance = ndi.distance_transform_edt(mask)
-    coordinates = feature.peak_local_max(
-        distance,
-        labels=mask,
-        min_distance=min_peak_distance,
-        exclude_border=False,
-    )
+    if min_peak_distance > 0:
+        coordinates = feature.peak_local_max(
+            distance,
+            labels=mask,
+            min_distance=min_peak_distance,
+            exclude_border=False,
+        )
 
-    markers = np.zeros(mask.shape, dtype=np.int32)
-    if coordinates.size > 0:
-        for idx, (row, col) in enumerate(coordinates, start=1):
-            markers[row, col] = idx
-        markers = ndi.label(markers > 0)[0]
+        markers = np.zeros(mask.shape, dtype=np.int32)
+        if coordinates.size > 0:
+            for idx, (row, col) in enumerate(coordinates, start=1):
+                markers[row, col] = idx
+            markers = ndi.label(markers > 0)[0]
+        else:
+            markers = ndi.label(mask)[0]
     else:
         markers = ndi.label(mask)[0]
 
@@ -1789,7 +1776,7 @@ def segment_nuclei(
     areas: List[float] = []
     next_label = 1
     for region in measure.regionprops(labels):
-        if region.area >= min_area:
+        if min_area <= 0 or region.area >= min_area:
             filtered[labels == region.label] = next_label
             next_label += 1
             areas.append(float(region.area))
@@ -1810,6 +1797,10 @@ def estimate_background(channel: np.ndarray, roi_mask: np.ndarray, percentile: f
     channel = np.asarray(channel, dtype=np.float64)
     channel = np.nan_to_num(channel, nan=0.0, posinf=0.0, neginf=0.0)
     roi_mask = np.asarray(roi_mask, dtype=bool)
+    percentile = float(np.clip(percentile, 0.0, 100.0))
+
+    if percentile <= 0:
+        return 0.0
 
     outside = channel[~roi_mask]
     if outside.size >= 100:
@@ -1825,18 +1816,26 @@ def prepare_signal(channel: np.ndarray, roi_mask: np.ndarray, background_percent
     return signal, bg
 
 
+def _normalize_single_positive_threshold_rule(rule: Any, item_name: str) -> Dict[str, Any]:
+    if rule is None:
+        return {}
+    if isinstance(rule, (int, float)):
+        return {"method": "manual", "value": float(rule)}
+    if not isinstance(rule, dict):
+        raise ValueError(f"{item_name} 必须是 dict 或数字。")
+    return dict(rule)
+
+
 def _normalize_positive_threshold_rules(rules: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     normalized: Dict[str, Dict[str, Any]] = {}
     for channel_name, rule in (rules or {}).items():
         if rule is None:
             continue
         channel = normalize_channel_name(channel_name)
-        if isinstance(rule, (int, float)):
-            normalized[channel] = {"method": "manual", "value": float(rule)}
-            continue
-        if not isinstance(rule, dict):
-            raise ValueError(f"POSITIVE_THRESHOLD_RULES[{channel_name}] 必须是 dict 或数字。")
-        normalized[channel] = dict(rule)
+        normalized[channel] = _normalize_single_positive_threshold_rule(
+            rule,
+            item_name=f"POSITIVE_THRESHOLD_RULES[{channel_name}]",
+        )
     return normalized
 
 
@@ -1897,6 +1896,132 @@ def _normalize_channel_colors(raw_map: Dict[str, Any]) -> Dict[str, Tuple[int, i
     return normalized
 
 
+def _normalize_channel_settings(raw_settings: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for channel_name, raw_setting in (raw_settings or {}).items():
+        if raw_setting is None:
+            continue
+        channel = normalize_channel_name(channel_name)
+        if not isinstance(raw_setting, dict):
+            raise ValueError(f"CHANNEL_SETTINGS[{channel_name}] 必须是 dict。")
+
+        threshold_rule = _normalize_single_positive_threshold_rule(
+            raw_setting.get("positive_threshold", {}),
+            item_name=f"CHANNEL_SETTINGS[{channel_name}].positive_threshold",
+        )
+        color = _normalize_channel_colors(
+            {channel: raw_setting.get("color", CHANNEL_PSEUDOCOLOR_RGB.get(channel, (255, 255, 255)))}
+        )[channel]
+        normalized[channel] = {
+            "background_percentile": float(np.clip(raw_setting.get("background_percentile", DEFAULT_BACKGROUND_PERCENTILE), 0.0, 100.0)),
+            "positive_min_area": int(max(0, raw_setting.get("positive_min_area", DEFAULT_POSITIVE_OBJECT_AREA))),
+            "positive_threshold": threshold_rule,
+            "color": color,
+        }
+    return normalized
+
+
+def build_channel_setting_maps(
+    channel_settings: Dict[str, Dict[str, Any]]
+) -> Tuple[Dict[str, float], Dict[str, int], Dict[str, Dict[str, Any]], Dict[str, Tuple[int, int, int]]]:
+    background_rules: Dict[str, float] = {}
+    positive_area_rules: Dict[str, int] = {}
+    threshold_rules: Dict[str, Dict[str, Any]] = {}
+    channel_colors: Dict[str, Tuple[int, int, int]] = {}
+
+    for channel_name, setting in (channel_settings or {}).items():
+        channel = normalize_channel_name(channel_name)
+        background_rules[channel] = float(np.clip(setting.get("background_percentile", DEFAULT_BACKGROUND_PERCENTILE), 0.0, 100.0))
+        positive_area_rules[channel] = int(max(0, setting.get("positive_min_area", DEFAULT_POSITIVE_OBJECT_AREA)))
+        threshold_rules[channel] = _normalize_single_positive_threshold_rule(
+            setting.get("positive_threshold", {}),
+            item_name=f"CHANNEL_SETTINGS[{channel_name}].positive_threshold",
+        )
+        channel_colors[channel] = _normalize_channel_colors(
+            {channel: setting.get("color", CHANNEL_PSEUDOCOLOR_RGB.get(channel, (255, 255, 255)))}
+        )[channel]
+
+    return background_rules, positive_area_rules, threshold_rules, channel_colors
+
+
+def merge_channel_settings_from_config(config: AnalysisConfig) -> Dict[str, Dict[str, Any]]:
+    existing = _normalize_channel_settings(config.channel_settings)
+    channels = unique_in_order(
+        [config.dapi_channel]
+        + list(config.intensity_channels)
+        + list(existing.keys())
+        + list((config.background_percentile_rules or {}).keys())
+        + list((config.positive_object_area_rules or {}).keys())
+        + list((config.positive_threshold_rules or {}).keys())
+        + list((config.channel_colors or {}).keys())
+    )
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    for channel_name in channels:
+        base = dict(existing.get(channel_name, {}))
+        merged[channel_name] = {
+            "background_percentile": float(np.clip(
+                (config.background_percentile_rules or {}).get(
+                    channel_name,
+                    base.get("background_percentile", config.background_percentile),
+                ),
+                0.0,
+                100.0,
+            )),
+            "positive_min_area": int(max(
+                0,
+                (config.positive_object_area_rules or {}).get(
+                    channel_name,
+                    base.get("positive_min_area", config.min_positive_object_area),
+                ),
+            )),
+            "positive_threshold": _normalize_single_positive_threshold_rule(
+                (config.positive_threshold_rules or {}).get(
+                    channel_name,
+                    base.get("positive_threshold", {}),
+                ),
+                item_name=f"channel settings for {channel_name}",
+            ),
+            "color": _normalize_channel_colors(
+                {
+                    channel_name: (config.channel_colors or {}).get(
+                        channel_name,
+                        base.get("color", CHANNEL_PSEUDOCOLOR_RGB.get(channel_name, (255, 255, 255))),
+                    )
+                }
+            )[normalize_channel_name(channel_name)],
+        }
+    return _normalize_channel_settings(merged)
+
+
+def _normalize_nucleus_segmentation_settings(raw_settings: Dict[str, Any]) -> Dict[str, Any]:
+    settings = dict(raw_settings or {})
+    return {
+        "background_percentile": float(np.clip(settings.get("background_percentile", 5.0), 0.0, 100.0)),
+        "gaussian_blur_size": ensure_odd_or_zero(settings.get("gaussian_blur_size", 0)),
+        "threshold": _normalize_single_positive_threshold_rule(
+            settings.get("threshold", {"method": "otsu"}),
+            item_name="NUCLEUS_SEGMENTATION_SETTINGS['threshold']",
+        ),
+        "min_mask_object_area": int(max(0, settings.get("min_mask_object_area", 0))),
+        "min_mask_hole_area": int(max(0, settings.get("min_mask_hole_area", 0))),
+        "opening_radius": int(max(0, settings.get("opening_radius", 0))),
+        "closing_radius": int(max(0, settings.get("closing_radius", 0))),
+        "min_peak_distance": int(max(0, settings.get("min_peak_distance", 0))),
+        "min_nucleus_area": int(max(0, settings.get("min_nucleus_area", 0))),
+        "mask_dilation_radius": int(max(0, settings.get("mask_dilation_radius", 0))),
+    }
+
+
+def merge_nucleus_segmentation_settings(config: AnalysisConfig) -> Dict[str, Any]:
+    merged = dict(config.nucleus_segmentation_settings or {})
+    merged["gaussian_blur_size"] = config.gaussian_blur_size
+    merged["min_peak_distance"] = config.min_peak_distance
+    merged["min_nucleus_area"] = config.min_nucleus_area
+    merged["mask_dilation_radius"] = config.mask_dilation_radius
+    return _normalize_nucleus_segmentation_settings(merged)
+
+
 def _normalize_bleedthrough_rules(rules: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     normalized: Dict[str, Dict[str, Any]] = {}
     for target_name, rule in (rules or {}).items():
@@ -1955,6 +2080,61 @@ def build_bleedthrough_rules_from_simple_config(
     return rules
 
 
+def resolve_threshold_from_values(
+    values: np.ndarray,
+    rule: Optional[Dict[str, Any]] = None,
+    default_method: str = "otsu",
+) -> Tuple[float, float, str, str]:
+    values = clean_numeric(values)
+    if values.size == 0:
+        return 0.0, 0.0, "empty", "没有可用像素，阈值记为 0。"
+
+    rule = _normalize_single_positive_threshold_rule(rule or {}, item_name="threshold rule")
+    method = str(rule.get("method", default_method)).strip().lower()
+    scale = float(rule.get("scale", 1.0))
+    offset = float(rule.get("offset", 0.0))
+    min_value = float(rule.get("min_value", 0.0))
+
+    if method == "manual":
+        base_threshold = float(rule.get("value", 0.0))
+        threshold = base_threshold
+        note = f"manual={base_threshold:.4g}"
+    elif method == "percentile":
+        percentile = float(np.clip(rule.get("percentile", 99.0), 0.0, 100.0))
+        base_threshold = float(np.percentile(values, percentile))
+        threshold = (base_threshold * scale) + offset
+        note = f"percentile={percentile:.1f} | base={base_threshold:.4g} | scale={scale:.3g} | offset={offset:.3g}"
+        method = "percentile"
+    else:
+        base_threshold = robust_otsu_threshold(values)
+        threshold = (base_threshold * scale) + offset
+        note = f"otsu={base_threshold:.4g} | scale={scale:.3g} | offset={offset:.3g}"
+        method = "otsu"
+
+    threshold = float(max(0.0, threshold, min_value))
+    if min_value > 0:
+        note = f"{note} | min={min_value:.3g}"
+    return threshold, float(base_threshold), method, note
+
+
+def validate_threshold_rule(rule: Dict[str, Any], item_name: str) -> Dict[str, Any]:
+    method = str(rule.get("method", "otsu")).strip().lower()
+    if method not in {"otsu", "manual", "percentile"}:
+        raise ValueError(f"不支持的 threshold method: {item_name} -> {method}")
+    rule["method"] = method
+    if "scale" in rule:
+        rule["scale"] = float(max(0.0, rule["scale"]))
+    if "offset" in rule:
+        rule["offset"] = float(rule["offset"])
+    if "min_value" in rule:
+        rule["min_value"] = float(max(0.0, rule["min_value"]))
+    if method == "manual":
+        rule["value"] = float(max(0.0, rule.get("value", 0.0)))
+    if method == "percentile":
+        rule["percentile"] = float(np.clip(rule.get("percentile", 99.0), 0.0, 100.0))
+    return rule
+
+
 def resolve_positive_threshold(
     channel_name: str,
     signal: np.ndarray,
@@ -1976,30 +2156,11 @@ def resolve_positive_threshold(
             note="ROI 内没有可用像素，阈值记为 0。",
         )
 
-    rule = dict(config.positive_threshold_rules.get(channel, {}))
-    method = str(rule.get("method", "otsu")).strip().lower()
-    scale = float(rule.get("scale", 1.0))
-    offset = float(rule.get("offset", 0.0))
-    min_value = float(rule.get("min_value", 0.0))
-
-    if method == "manual":
-        base_threshold = float(rule.get("value", 0.0))
-        threshold = base_threshold
-        note = f"manual={base_threshold:.4g}"
-    elif method == "percentile":
-        percentile = float(np.clip(rule.get("percentile", 99.0), 0.0, 100.0))
-        base_threshold = float(np.percentile(values, percentile))
-        threshold = (base_threshold * scale) + offset
-        note = f"percentile={percentile:.1f} | base={base_threshold:.4g} | scale={scale:.3g} | offset={offset:.3g}"
-    else:
-        base_threshold = robust_otsu_threshold(values)
-        threshold = (base_threshold * scale) + offset
-        note = f"otsu={base_threshold:.4g} | scale={scale:.3g} | offset={offset:.3g}"
-        method = "otsu"
-
-    threshold = float(max(0.0, threshold, min_value))
-    if min_value > 0:
-        note = f"{note} | min={min_value:.3g}"
+    threshold, base_threshold, method, note = resolve_threshold_from_values(
+        values,
+        rule=config.positive_threshold_rules.get(channel, {}),
+        default_method="otsu",
+    )
 
     return PositiveThresholdInfo(
         channel_name=channel,
@@ -2651,9 +2812,7 @@ def analyze_loaded_image(
     dapi = channel_arrays[config.dapi_channel]
     nuclei_labels, nuclei_mask, cell_count, mean_nucleus_area = segment_nuclei(
         dapi=dapi,
-        min_area=config.min_nucleus_area,
-        gaussian_blur_size=config.gaussian_blur_size,
-        min_peak_distance=config.min_peak_distance,
+        nucleus_segmentation_settings=config.nucleus_segmentation_settings,
     )
     roi_mask = dilate_mask(nuclei_mask, config.mask_dilation_radius)
 
@@ -3241,11 +3400,8 @@ def write_text_report(
     lines.append(f"AUTO_DETECT_CHANNELS: {config.auto_detect_channels}")
     lines.append(f"STRICT_CHANNEL_DETECTION: {config.strict_channel_detection}")
     lines.append(f"Fallback channel order: {config.fallback_channel_order}")
-    lines.append(f"Positive threshold rules: {json.dumps(config.positive_threshold_rules, ensure_ascii=False)}")
-    lines.append(f"Background percentile default: {config.background_percentile}")
-    lines.append(f"Background percentile rules: {json.dumps(config.background_percentile_rules, ensure_ascii=False)}")
-    lines.append(f"Min positive object area (default): {config.min_positive_object_area}")
-    lines.append(f"Positive object area rules: {json.dumps(config.positive_object_area_rules, ensure_ascii=False)}")
+    lines.append(f"Channel settings: {json.dumps(config.channel_settings, ensure_ascii=False)}")
+    lines.append(f"Nucleus segmentation settings: {json.dumps(config.nucleus_segmentation_settings, ensure_ascii=False)}")
     lines.append(f"ENABLE_BLEEDTHROUGH_CORRECTION: {config.enable_bleedthrough_correction}")
     lines.append(f"SAVE_BLEEDTHROUGH_DIAGNOSTICS: {config.save_bleedthrough_diagnostics}")
     lines.append(f"Bleedthrough rules: {json.dumps(config.bleedthrough_rules, ensure_ascii=False)}")
@@ -3253,7 +3409,6 @@ def write_text_report(
     lines.append(f"Intensity channels: {config.intensity_channels}")
     lines.append(f"Auto colocalization pairs: {config.auto_colocalization_pairs}")
     lines.append(f"Colocalization pairs: {config.colocalization_pairs}")
-    lines.append(f"Channel colors: {json.dumps(config.channel_colors, ensure_ascii=False)}")
     lines.append(f"Raw channel display mode: {config.raw_channel_display_mode}")
     lines.append(f"Positive preview display mode: {config.positive_preview_display_mode}")
     lines.append(f"Positive preview colormap: {config.positive_preview_colormap}")
@@ -3341,15 +3496,11 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
     print(f"Manual FILE_CHANNEL_ORDER: {config.file_channel_order if config.file_channel_order else 'AUTO'}")
     print(f"Auto detect channels   : {config.auto_detect_channels}")
     print(f"Strict detection       : {config.strict_channel_detection}")
-    print(f"Positive thresholds    : {json.dumps(config.positive_threshold_rules, ensure_ascii=False)}")
-    print(f"Background pct default : {config.background_percentile}")
-    print(f"Background pct rules   : {json.dumps(config.background_percentile_rules, ensure_ascii=False)}")
-    print(f"Min positive obj area  : {config.min_positive_object_area}")
-    print(f"Positive obj area rules: {json.dumps(config.positive_object_area_rules, ensure_ascii=False)}")
+    print(f"Channel settings       : {json.dumps(config.channel_settings, ensure_ascii=False)}")
+    print(f"Nucleus segmentation   : {json.dumps(config.nucleus_segmentation_settings, ensure_ascii=False)}")
     print(f"Intensity channels     : {config.intensity_channels}")
     print(f"Auto coloc pairs       : {config.auto_colocalization_pairs}")
     print(f"Colocalization pairs   : {config.colocalization_pairs}")
-    print(f"Channel colors         : {json.dumps(config.channel_colors, ensure_ascii=False)}")
     print(f"Raw channel display    : {config.raw_channel_display_mode}")
     print(f"Positive preview mode  : {config.positive_preview_display_mode}")
     print(f"Positive preview cmap  : {config.positive_preview_colormap}")
@@ -3532,6 +3683,16 @@ def build_default_config() -> AnalysisConfig:
     file_channel_order = globals().get("FILE_CHANNEL_ORDER", None)
     if file_channel_order is not None:
         file_channel_order = list(file_channel_order)
+    channel_settings = _normalize_channel_settings(json.loads(json.dumps(CHANNEL_SETTINGS)))
+    (
+        background_percentile_rules,
+        positive_object_area_rules,
+        positive_threshold_rules,
+        channel_colors,
+    ) = build_channel_setting_maps(channel_settings)
+    nucleus_segmentation_settings = _normalize_nucleus_segmentation_settings(
+        json.loads(json.dumps(NUCLEUS_SEGMENTATION_SETTINGS))
+    )
     bleedthrough_rules = build_bleedthrough_rules_from_simple_config(
         source_map=json.loads(json.dumps(BLEEDTHROUGH_SOURCE_MAP)),
         default_rule=json.loads(json.dumps(BLEEDTHROUGH_DEFAULT_RULE)),
@@ -3551,7 +3712,7 @@ def build_default_config() -> AnalysisConfig:
         strict_channel_detection=bool(STRICT_CHANNEL_DETECTION),
         save_channel_diagnostics=bool(SAVE_CHANNEL_DIAGNOSTICS),
         fallback_channel_order=list(FALLBACK_CHANNEL_ORDER),
-        positive_threshold_rules=json.loads(json.dumps(POSITIVE_THRESHOLD_RULES)),
+        positive_threshold_rules=positive_threshold_rules,
 
         enable_bleedthrough_correction=bool(ENABLE_BLEEDTHROUGH_CORRECTION),
         save_bleedthrough_diagnostics=bool(SAVE_BLEEDTHROUGH_DIAGNOSTICS),
@@ -3563,18 +3724,20 @@ def build_default_config() -> AnalysisConfig:
         colocalization_pairs=list(COLOCALIZATION_PAIRS),
         filename_role_map=json.loads(json.dumps(FILENAME_ROLE_MAP)),
         filename_channel_map=json.loads(json.dumps(FILENAME_CHANNEL_MAP)),
+        channel_settings=channel_settings,
+        nucleus_segmentation_settings=nucleus_segmentation_settings,
 
         image_patterns=list(IMAGE_PATTERNS),
         recursive_scan=RECURSIVE_SCAN,
-        background_percentile=BACKGROUND_PERCENTILE,
-        background_percentile_rules=json.loads(json.dumps(BACKGROUND_PERCENTILE_RULES)),
-        min_nucleus_area=MIN_NUCLEUS_AREA,
-        min_positive_object_area=MIN_POSITIVE_OBJECT_AREA,
-        positive_object_area_rules=json.loads(json.dumps(POSITIVE_OBJECT_AREA_RULES)),
-        gaussian_blur_size=GAUSSIAN_BLUR_SIZE,
-        min_peak_distance=MIN_PEAK_DISTANCE,
-        mask_dilation_radius=MASK_DILATION_RADIUS,
-        channel_colors=json.loads(json.dumps(CHANNEL_COLORS)),
+        background_percentile=DEFAULT_BACKGROUND_PERCENTILE,
+        background_percentile_rules=background_percentile_rules,
+        min_nucleus_area=int(nucleus_segmentation_settings["min_nucleus_area"]),
+        min_positive_object_area=DEFAULT_POSITIVE_OBJECT_AREA,
+        positive_object_area_rules=positive_object_area_rules,
+        gaussian_blur_size=int(nucleus_segmentation_settings["gaussian_blur_size"]),
+        min_peak_distance=int(nucleus_segmentation_settings["min_peak_distance"]),
+        mask_dilation_radius=int(nucleus_segmentation_settings["mask_dilation_radius"]),
+        channel_colors=channel_colors,
         raw_channel_display_mode=str(RAW_CHANNEL_DISPLAY_MODE),
         positive_preview_display_mode=str(POSITIVE_PREVIEW_DISPLAY_MODE),
         positive_preview_colormap=str(POSITIVE_PREVIEW_COLORMAP),
