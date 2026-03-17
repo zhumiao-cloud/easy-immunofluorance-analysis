@@ -46,6 +46,7 @@ B. 已经合成好的 RGB/BGR 彩图
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -54,6 +55,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import lru_cache
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -83,8 +85,8 @@ except Exception:
 # 用户配置区：绝大多数情况下，只需要修改这一段
 # ============================================================================
 
-GROUP1_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/p21/3m"
-GROUP2_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/p21/22m"
+GROUP1_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/p21/3m"
+GROUP2_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/all_in_one/all_in_one_analysis/p21/22m"
 GROUP1_NAME = "3m"
 GROUP2_NAME = "22m"
 OUTPUT_DIR = r"/Users/yemingzhu/Downloads/课题文件/原始数据胸腺/免疫荧光/if_analysis_results"
@@ -149,8 +151,9 @@ BLEEDTHROUGH_RULES: Dict[str, Dict[str, Any]] = {
 
 # DAPI 及需要分析的通道
 DAPI_CHANNEL = "DAPI"
-INTENSITY_CHANNELS = ["488", "594"]  # 如果是 488和 647，这里要改一下["488", "647"]
-COLOCALIZATION_PAIRS = [("488", "594")] # 如果是 488和 647，这里要改一下[("488", "647")]
+INTENSITY_CHANNELS = ["488", "594"]  # 如果要同时分析 488/594/647，可改成 ["488", "594", "647"]
+AUTO_COLOCALIZATION_PAIRS = True     # True: 自动对 INTENSITY_CHANNELS 生成全部两两组合
+COLOCALIZATION_PAIRS: List[Tuple[str, str]] = []  # 仅在 AUTO_COLOCALIZATION_PAIRS=False 时生效
 
 # 文件扫描
 IMAGE_PATTERNS = ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"]
@@ -206,6 +209,7 @@ class AnalysisConfig:
 
     dapi_channel: str
     intensity_channels: List[str]
+    auto_colocalization_pairs: bool
     colocalization_pairs: List[Tuple[str, str]]
 
     image_patterns: List[str] = field(default_factory=lambda: ["*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp"])
@@ -363,6 +367,36 @@ def sanitize_filename(text: str) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text).strip())
     text = text.strip("._")
     return text or "output"
+
+
+def build_output_basename(group_name: str, image_path: Path) -> str:
+    group_token = sanitize_filename(group_name)
+    image_token = sanitize_filename(image_path.stem)
+    digest = hashlib.md5(str(image_path.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"{group_token}__{image_token}__{digest}"
+
+
+def build_all_channel_pairs(channel_names: Sequence[str]) -> List[Tuple[str, str]]:
+    normalized = [normalize_channel_name(name) for name in channel_names]
+    return [(a, b) for a, b in combinations(normalized, 2)]
+
+
+def normalize_colocalization_pairs(raw_pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    normalized: List[Tuple[str, str]] = []
+    seen = set()
+
+    for channel_a, channel_b in raw_pairs:
+        a_name = normalize_channel_name(channel_a)
+        b_name = normalize_channel_name(channel_b)
+        if a_name == b_name:
+            raise ValueError(f"共定位通道对不能是同一个通道: {a_name}")
+        key = tuple(sorted((a_name, b_name)))
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append((a_name, b_name))
+
+    return normalized
 
 
 def clean_numeric(values: Sequence[Any]) -> np.ndarray:
@@ -632,12 +666,19 @@ def build_merged_preview(
             green = make_thresholded_preview(green, positive_thresholds["488"].threshold)
         merged[..., 1] = np.maximum(merged[..., 1], robust_normalize_for_display(green))
 
-    for red_name in ("594", "647"):
-        if red_name in channel_images:
-            red = channel_images[red_name]
-            if thresholded and positive_thresholds and red_name in positive_thresholds:
-                red = make_thresholded_preview(red, positive_thresholds[red_name].threshold)
-            merged[..., 0] = np.maximum(merged[..., 0], robust_normalize_for_display(red))
+    if "594" in channel_images:
+        ch594 = channel_images["594"]
+        if thresholded and positive_thresholds and "594" in positive_thresholds:
+            ch594 = make_thresholded_preview(ch594, positive_thresholds["594"].threshold)
+        merged[..., 0] = np.maximum(merged[..., 0], robust_normalize_for_display(ch594))
+
+    if "647" in channel_images:
+        ch647 = channel_images["647"]
+        if thresholded and positive_thresholds and "647" in positive_thresholds:
+            ch647 = make_thresholded_preview(ch647, positive_thresholds["647"].threshold)
+        ch647_u8 = robust_normalize_for_display(ch647)
+        merged[..., 0] = np.maximum(merged[..., 0], ch647_u8)
+        merged[..., 2] = np.maximum(merged[..., 2], np.clip(np.round(ch647_u8 * 0.7), 0, 255).astype(np.uint8))
 
     return merged
 
@@ -1121,10 +1162,10 @@ def validate_config(config: AnalysisConfig) -> AnalysisConfig:
     config.bleedthrough_rules = _normalize_bleedthrough_rules(config.bleedthrough_rules)
     config.dapi_channel = normalize_channel_name(config.dapi_channel)
     config.intensity_channels = [normalize_channel_name(x) for x in config.intensity_channels]
-    config.colocalization_pairs = [
-        (normalize_channel_name(a), normalize_channel_name(b))
-        for a, b in config.colocalization_pairs
-    ]
+    config.colocalization_pairs = normalize_colocalization_pairs(config.colocalization_pairs)
+
+    if config.auto_colocalization_pairs:
+        config.colocalization_pairs = build_all_channel_pairs(config.intensity_channels)
 
     for channel_name, rule in config.positive_threshold_rules.items():
         method = str(rule.get("method", "otsu")).strip().lower()
@@ -1666,6 +1707,7 @@ def compute_colocalization(
 
 def build_channel_diagnostic_figure(
     image_path: Path,
+    group_name: str,
     image: np.ndarray,
     resolution: ChannelResolution,
     signals: Dict[str, np.ndarray],
@@ -1707,16 +1749,17 @@ def build_channel_diagnostic_figure(
             bottom_row.append((f"{name}\nnot analyzed", np.zeros((*image.shape[:2], 3), dtype=np.uint8)))
 
     method_text = resolution.method or "auto"
-    out_path = diagnostics_dir / f"{sanitize_filename(image_path.stem)}_channels.png"
+    out_path = diagnostics_dir / f"{build_output_basename(group_name, image_path)}_channels.png"
     return save_lossless_panel_grid(
         out_path=out_path,
-        title=f"{image_path.name}\nChannel diagnostics | row1=raw | row2=positive preview | {method_text}",
+        title=f"[{group_name}] {image_path.name}\nChannel diagnostics | row1=raw | row2=positive preview | {method_text}",
         rows=[top_row, bottom_row],
     )
 
 
 def build_qc_figure(
     image_path: Path,
+    group_name: str,
     dapi: np.ndarray,
     roi_mask: np.ndarray,
     nuclei_labels: np.ndarray,
@@ -1792,16 +1835,17 @@ def build_qc_figure(
     qc_panels.append(("Merged QC (thresholded)", build_merged_preview(merged_channels, thresholded=False)))
 
     method_text = resolution.method or "auto"
-    out_path = qc_dir / f"{sanitize_filename(image_path.stem)}_qc.png"
+    out_path = qc_dir / f"{build_output_basename(group_name, image_path)}_qc.png"
     return save_lossless_panel_grid(
         out_path=out_path,
-        title=f"{image_path.name}\n{method_text} | order={resolution.channel_order}",
+        title=f"[{group_name}] {image_path.name}\n{method_text} | order={resolution.channel_order}",
         rows=[qc_panels],
     )
 
 
 def build_bleedthrough_diagnostic_figure(
     image_path: Path,
+    group_name: str,
     channel_name: str,
     raw_channel: np.ndarray,
     uncorrected_signal: np.ndarray,
@@ -1835,11 +1879,11 @@ def build_bleedthrough_diagnostic_figure(
     axes[3].axis("off")
 
     fig.suptitle(
-        f"{image_path.name}\nBleed-through correction: {channel_name} <- {info.source_channel} | {info.mode}",
+        f"[{group_name}] {image_path.name}\nBleed-through correction: {channel_name} <- {info.source_channel} | {info.mode}",
         fontsize=11,
     )
     plt.tight_layout(rect=[0, 0, 1, 0.90])
-    out_path = out_dir / f"{sanitize_filename(image_path.stem)}_{sanitize_filename(channel_name)}_bleedthrough.png"
+    out_path = out_dir / f"{build_output_basename(group_name, image_path)}_{sanitize_filename(channel_name)}_bleedthrough.png"
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     return out_path
@@ -1936,6 +1980,7 @@ def analyze_single_image(
         "image_name": image_path.stem,
         "image_file": image_path.name,
         "image_path": str(image_path),
+        "image_output_id": build_output_basename(group_name, image_path),
         "group": group_name,
         "height_px": height,
         "width_px": width,
@@ -2001,6 +2046,7 @@ def analyze_single_image(
 
     qc_path = build_qc_figure(
         image_path=image_path,
+        group_name=group_name,
         dapi=dapi,
         roi_mask=roi_mask,
         nuclei_labels=nuclei_labels,
@@ -2018,6 +2064,7 @@ def analyze_single_image(
     if config.save_channel_diagnostics:
         diag_path = build_channel_diagnostic_figure(
             image_path=image_path,
+            group_name=group_name,
             image=image,
             resolution=resolution,
             signals=signals,
@@ -2032,6 +2079,7 @@ def analyze_single_image(
         for channel_name, correction_info in corrections.items():
             bt_path = build_bleedthrough_diagnostic_figure(
                 image_path=image_path,
+                group_name=group_name,
                 channel_name=channel_name,
                 raw_channel=channel_arrays[channel_name],
                 uncorrected_signal=uncorrected_signals[channel_name],
@@ -2358,6 +2406,7 @@ def write_text_report(
     lines.append(f"Bleedthrough rules: {json.dumps(config.bleedthrough_rules, ensure_ascii=False)}")
     lines.append(f"DAPI channel: {config.dapi_channel}")
     lines.append(f"Intensity channels: {config.intensity_channels}")
+    lines.append(f"Auto colocalization pairs: {config.auto_colocalization_pairs}")
     lines.append(f"Colocalization pairs: {config.colocalization_pairs}")
     lines.append("")
     lines.append("Statistics policy")
@@ -2370,9 +2419,10 @@ def write_text_report(
     if not per_image_df.empty and "resolved_channel_order" in per_image_df.columns:
         lines.append("Per-image channel mapping")
         lines.append("-" * 72)
-        for _, row in per_image_df[["image_file", "channel_detection_method", "resolved_channel_order"]].iterrows():
+        for _, row in per_image_df[["group", "image_file", "image_output_id", "channel_detection_method", "resolved_channel_order"]].iterrows():
             lines.append(
-                f"{row['image_file']}: method={row['channel_detection_method']} | {row['resolved_channel_order']}"
+                f"[{row['group']}] {row['image_file']} ({row['image_output_id']}): "
+                f"method={row['channel_detection_method']} | {row['resolved_channel_order']}"
             )
         lines.append("")
 
@@ -2439,6 +2489,7 @@ def run_analysis(config: AnalysisConfig) -> Dict[str, Any]:
     print(f"Strict detection       : {config.strict_channel_detection}")
     print(f"Positive thresholds    : {json.dumps(config.positive_threshold_rules, ensure_ascii=False)}")
     print(f"Intensity channels     : {config.intensity_channels}")
+    print(f"Auto coloc pairs       : {config.auto_colocalization_pairs}")
     print(f"Colocalization pairs   : {config.colocalization_pairs}")
     print(f"Output                 : {run_dir}")
 
@@ -2586,6 +2637,7 @@ def build_default_config() -> AnalysisConfig:
 
         dapi_channel=DAPI_CHANNEL,
         intensity_channels=list(INTENSITY_CHANNELS),
+        auto_colocalization_pairs=bool(AUTO_COLOCALIZATION_PAIRS),
         colocalization_pairs=list(COLOCALIZATION_PAIRS),
 
         image_patterns=list(IMAGE_PATTERNS),
@@ -2624,6 +2676,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dapi-channel", type=str, help="DAPI 通道名")
     parser.add_argument("--intensity-channels", nargs="+", help="做强度分析的通道")
     parser.add_argument("--coloc-pairs", nargs="+", help="共定位通道对，如 488:594 594:647")
+    parser.add_argument("--all-coloc-pairs", action="store_true", help="自动对所有 intensity channels 生成两两共定位/相关性统计")
+    parser.add_argument("--no-auto-coloc-pairs", action="store_true", help="关闭自动两两配对，仅使用 --coloc-pairs 或顶部配置中的手动列表")
     parser.add_argument("--recursive-scan", action="store_true", help="递归扫描子文件夹")
     parser.add_argument("--background-percentile", type=float, help="背景分位数")
     parser.add_argument("--min-nucleus-area", type=int, help="最小核面积")
@@ -2672,7 +2726,13 @@ def apply_cli_overrides(config: AnalysisConfig, args: argparse.Namespace) -> Ana
         config.dapi_channel = args.dapi_channel
     if args.intensity_channels:
         config.intensity_channels = list(args.intensity_channels)
+    if args.all_coloc_pairs:
+        config.auto_colocalization_pairs = True
+        config.colocalization_pairs = []
+    if args.no_auto_coloc_pairs:
+        config.auto_colocalization_pairs = False
     if args.coloc_pairs:
+        config.auto_colocalization_pairs = False
         config.colocalization_pairs = parse_coloc_pairs(args.coloc_pairs)
     if args.recursive_scan:
         config.recursive_scan = True
