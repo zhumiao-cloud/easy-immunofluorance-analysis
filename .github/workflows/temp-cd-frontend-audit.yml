@@ -1,5 +1,6 @@
 name: Temporary CloudDrive frontend download audit
 
+# One-shot public/no-secret inspection; safe to remove after audit.
 on:
   push:
     paths:
@@ -37,11 +38,9 @@ jobs:
                   data=urllib.request.urlopen(rq,timeout=25).read()
                   if len(data)>20_000_000: continue
                   text=data.decode('utf-8','replace')
-              except Exception as e:
+              except Exception:
                   continue
-              found=[]
-              for p in pats:
-                  if p in text: found.append(p)
+              found=[p for p in pats if p in text]
               if not found: continue
               hits+=1
               path=urllib.parse.urlsplit(u).path
@@ -49,7 +48,6 @@ jobs:
               for p in found:
                   i=text.find(p); a=max(0,i-240); b=min(len(text),i+420)
                   snippet=re.sub(r'\s+',' ',text[a:b])
-                  # Static JS only; still avoid dumping long literals that might look like credentials.
                   snippet=re.sub(r'([A-Za-z0-9_\-]{80,})','<LONG_LITERAL>',snippet)
                   print('SNIP',p,snippet[:700])
           print('MATCHED_ASSETS',hits)
